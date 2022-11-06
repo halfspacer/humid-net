@@ -74,7 +74,36 @@ public class LiteNetLibManager : NetworkManager, IInitialize, IUninitialize, ITi
         callback?.Invoke(Results.Success, list);
     }
 
-    private protected override void CreateLobbyInternal(string lobbyName, Action<Results> callback = null) {
+    private protected override void CreateLobbyInternal(string lobbyName, Action<Results, LobbyData> callback = null) {
+        callback?.Invoke(Results.Failure, new LobbyData());
+    }
+    
+    private protected override void JoinLobbyInternal(string lobbyId, Action<Results, LobbyData> callback = null) {
+        callback?.Invoke(Results.Failure, new LobbyData());
+    }
+
+    private protected override void LeaveLobbyInternal(string lobbyId, Action<Results> callback = null) {
         callback?.Invoke(Results.Failure);
+    }
+
+    private protected override void InitP2PInternal(Action<Results> callback = null) {
+        callback?.Invoke(Results.Failure);
+    }
+
+    private protected override void SendInternal(string userId, byte[] data, PacketReliability reliability) {
+         
+    }
+
+    private protected override void SendToAllInternal(byte[] data, PacketReliability reliability) {
+        
+    }
+
+    private protected override ReceivedData ReceiveInternal() {
+        return new ReceivedData {
+            success = false,
+            fromUserId = null,
+            data = new byte[] {
+            }
+        };
     }
 }

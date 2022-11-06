@@ -97,4 +97,42 @@ public class LobbyManager {
             lobbySearchHandle.Release();
         });
     }
+    
+    public void GetLobby(string lobbyId, Action<LobbyDetails> lobby) {
+        var createLobbySearchOptions = new CreateLobbySearchOptions {
+            MaxResults = 1
+        };
+        platformInterface.GetLobbyInterface().CreateLobbySearch(ref createLobbySearchOptions, out var lobbySearchHandle);
+        var lobbySearchFindOptions = new LobbySearchFindOptions {
+            LocalUserId = localUserId
+        };
+        
+        var lobbySearchSetLobbyIdOptions = new LobbySearchSetLobbyIdOptions {
+            LobbyId = lobbyId
+        };
+        
+        lobbySearchHandle.SetLobbyId(ref lobbySearchSetLobbyIdOptions);
+        lobbySearchHandle.Find(ref lobbySearchFindOptions, null, (ref LobbySearchFindCallbackInfo data) => {
+            if (data.ResultCode == Result.Success) {
+                var lobbySearchResultCount = new LobbySearchGetSearchResultCountOptions();
+                var count = lobbySearchHandle.GetSearchResultCount(ref lobbySearchResultCount);
+                if (count > 0) {
+                    var lobbySearchCopySearchResultByIndexOptions = new LobbySearchCopySearchResultByIndexOptions {
+                        LobbyIndex = 0
+                    };
+                    lobbySearchHandle.CopySearchResultByIndex(ref lobbySearchCopySearchResultByIndexOptions, out var lobbyDetailsHandle);
+                    lobby?.Invoke(lobbyDetailsHandle);
+                }
+                else {
+                    lobby?.Invoke(null);
+                }
+            }
+            else {
+                Debug.LogError("Failed to find lobby");
+                lobby?.Invoke(null);
+            }
+            
+            lobbySearchHandle.Release();
+        });
+    }
 }

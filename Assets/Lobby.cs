@@ -23,15 +23,19 @@ public class Lobby : NetworkedMonobehaviour {
                 }
 
                 foreach (var lobby in lobbies) {
-                    var lobbyObject = Instantiate(lobbyPrefab, lobbyParent);
-                    var lobbyComponent = lobbyObject.GetComponent<LobbyComponent>();
-                    lobbyComponent.SetLobby(lobby);
+                    AddLobby(lobby);
                 }
             }
             else {
                 Debug.Log("Failed to get lobbies");
             }
         }
+    }
+
+    private void AddLobby(LobbyData lobby) {
+        var lobbyObject = Instantiate(lobbyPrefab, lobbyParent);
+        var lobbyComponent = lobbyObject.GetComponent<LobbyComponent>();
+        lobbyComponent.SetLobby(lobby);
     }
 
     [Button("Refresh")]
@@ -41,8 +45,12 @@ public class Lobby : NetworkedMonobehaviour {
     
     [Button("Create Lobby (Debug)")]
     public void CreateLobbyDebug() {
-        NetManager.CreateLobby("Test Lobby #" + Random.Range(0, 1000), (results) => {
-            Start();
+        NetManager.CreateLobby("Test Lobby #" + Random.Range(0, 1000), (results, lobbyData) => {
+            AddLobby(lobbyData);
         });
+    }
+
+    public override void OnDataReceived(NetworkManager.ReceivedData networkEvent) {
+        
     }
 }

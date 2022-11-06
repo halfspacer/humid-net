@@ -9,7 +9,17 @@ namespace App.Scripts.Netcode.Base {
     public abstract class NetworkManager : MonoBehaviour {
         private bool _isInitialized;
         private bool _isAuthenticated;
+        private LobbyData _currentLobby;
+        private List<NetworkedMonobehaviour> _networkedMonobehaviours = new List<NetworkedMonobehaviour>();
         
+        public void Subscribe<T>(T networkedMonobehaviour) where T : NetworkedMonobehaviour {
+            _networkedMonobehaviours.Add(networkedMonobehaviour);
+        }
+        
+        public void Unsubscribe<T>(T networkedMonobehaviour) where T : NetworkedMonobehaviour {
+            _networkedMonobehaviours.Remove(networkedMonobehaviour);
+        }
+
         private void OnEnable() {
             StartCoroutine(InitializeCoroutine());
             IEnumerator InitializeCoroutine() {
@@ -80,6 +90,7 @@ namespace App.Scripts.Netcode.Base {
         private ITick _tick;
         private void Update() {
             _tick?.Tick();
+            Receive();
         }
         
         private void OnDisable() {
@@ -107,10 +118,9 @@ namespace App.Scripts.Netcode.Base {
             GetLobbyListInternal(10, callback);
         }
         
-        private protected abstract void CreateLobbyInternal(string lobbyName, Action<Results> callback = null);
-        public void CreateLobby(string lobbyName, Action<Results> callback = null) {
+        private protected abstract void CreateLobbyInternal(string lobbyName, Action<Results, LobbyData> callback = null);
+        public void CreateLobby(string lobbyName, Action<Results, LobbyData> callback = null) {
             if (!_isInitialized || !_isAuthenticated) {
-                Debug.Log("Network manager is not yet initialized or authenticated");
                 _callQueue.Enqueue(new CallQueue {
                     time = DateTime.Now,
                     callback = () => CreateLobby(lobbyName, callback)
@@ -118,7 +128,108 @@ namespace App.Scripts.Netcode.Base {
                 return;
             }
             
-            CreateLobbyInternal(lobbyName, callback);
+            CreateLobbyInternal(lobbyName, ((results, data) => {
+                //Set current lobby
+                _currentLobby = data;
+                
+                //Call callback
+                callback?.Invoke(results, data);
+            }));
+        }
+        
+        private protected abstract void JoinLobbyInternal(string lobbyId, Action<Results, LobbyData> callback = null);
+        public void JoinLobby(string lobbyId, Action<Results, LobbyData> callback = null) {
+            if (!_isInitialized || !_isAuthenticated) {
+                _callQueue.Enqueue(new CallQueue {
+                    time = DateTime.Now,
+                    callback = () => JoinLobby(lobbyId, callback)
+                });
+                return;
+            }
+            
+            JoinLobbyInternal(lobbyId, ((results, lobby) => {
+                //Set current lobby
+                _currentLobby = lobby;
+
+                //Call callback
+                callback?.Invoke(results, lobby);
+            }));
+        }
+        
+        private protected abstract void LeaveLobbyInternal(string lobbyId, Action<Results> callback = null);
+        public void LeaveLobby(string lobbyId, Action<Results> callback = null) {
+            if (!_isInitialized || !_isAuthenticated) {
+                _callQueue.Enqueue(new CallQueue {
+                    time = DateTime.Now,
+                    callback = () => LeaveLobby(lobbyId, callback)
+                });
+                return;
+            }
+            
+            LeaveLobbyInternal(lobbyId, ((results) => {
+                //Set current lobby to new lobby
+                _currentLobby = new LobbyData();
+
+                //Call callback
+                callback?.Invoke(results);
+            }));
+        }
+        
+        private protected abstract void InitP2PInternal(Action<Results> callback = null);
+        public void InitP2P(Action<Results> callback = null) {
+            if (!_isInitialized || !_isAuthenticated) {
+                _callQueue.Enqueue(new CallQueue {
+                    time = DateTime.Now,
+                    callback = () => InitP2P(callback)
+                });
+                return;
+            }
+            
+            InitP2PInternal(callback);
+        }
+        
+        private protected abstract void SendInternal(string userId, byte[] data, PacketReliability reliability);
+        public void Send(string userId, byte[] data, PacketReliability reliability) {
+            if (!_isInitialized || !_isAuthenticated || string.IsNullOrEmpty(_currentLobby.uuid)) {
+                return;
+            }
+            
+            SendInternal(userId, data, reliability);
+        }
+        
+        private protected abstract void SendToAllInternal(byte[] data, PacketReliability reliability);
+        public void SendToAll(byte[] data, PacketReliability reliability) {
+            if (!_isInitialized || !_isAuthenticated || string.IsNullOrEmpty(_currentLobby.uuid)) {
+                return;
+            }
+            
+            SendToAllInternal(data, reliability);
+        }
+        
+        public struct ReceivedData {
+            public bool success;
+            public string fromUserId;
+            public byte[] data;
+        }
+        
+        private ReceivedData _badData = new ReceivedData {
+            success = false
+        };
+        
+        private protected abstract ReceivedData ReceiveInternal();
+        private void Receive() {
+            if (!_isInitialized || !_isAuthenticated || string.IsNullOrEmpty(_currentLobby.uuid)) {
+                return;
+            }
+            
+            var receivedData = ReceiveInternal();
+            if (!receivedData.success) {
+                return;
+            }
+
+            foreach (var networkedMonobehaviour in _networkedMonobehaviours) {
+                networkedMonobehaviour.OnDataReceived(receivedData);
+            }
         }
     }
 }

@@ -12,5 +12,15 @@ namespace App.Scripts.Netcode.Base {
             }
             private set => _networkManager = value;
         }
+        
+        public void OnEnable() {
+            NetManager.Subscribe(this);
+        }
+        
+        public void OnDisable() {
+            NetManager.Unsubscribe(this);
+        }
+        
+        public abstract void OnDataReceived(NetworkManager.ReceivedData networkEvent);
     }
 }

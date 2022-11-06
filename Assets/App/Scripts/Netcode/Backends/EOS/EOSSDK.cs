@@ -8,6 +8,7 @@ using Epic.OnlineServices;
 using Epic.OnlineServices.Connect;
 using Epic.OnlineServices.Lobby;
 using Epic.OnlineServices.Logging;
+using Epic.OnlineServices.P2P;
 using Epic.OnlineServices.Platform;
 using UnityEngine;
 using Credentials = Epic.OnlineServices.Connect.Credentials;
@@ -30,6 +31,9 @@ namespace App.Scripts.Netcode.Backends.EOS {
         [SerializeField] private string clientSecret = "";
         private float _platformTickTimer;
         private ProductUserId _localUserId;
+        private HashSet<ProductUserId> _remoteUserIds = new HashSet<ProductUserId>();
+        private ProductUserId _lobbyOwnerUserId;
+        private P2PInterface _p2PInterface;
 
         // If we're in editor, we should dynamically load and unload the SDK between play sessions.
         // This allows us to initialize the SDK each time the game is run in editor.
@@ -159,6 +163,8 @@ namespace App.Scripts.Netcode.Backends.EOS {
                     message = "Failed to create platform"
                 });
             } else {
+                _p2PInterface = _platformInterface.GetP2PInterface();
+                AddEventHandlers();
                 onComplete?.Invoke(new ResultData {
                     result = Results.Success,
                     message = "Platform created"
@@ -166,8 +172,72 @@ namespace App.Scripts.Netcode.Backends.EOS {
             }
         }
 
+        private ulong _addNotifyLobbyMemberStatusReceivedHandle;
+        private ulong _addNotifyPeerConnectionClosedHandle;
+        private ulong _addNotifyPeerConnectionRequestHandle;
+        private void AddEventHandlers() {
+            var notifyLobbyMemberStatusUpdateReceivedOptions = new AddNotifyLobbyMemberStatusReceivedOptions();
+            _addNotifyLobbyMemberStatusReceivedHandle = _platformInterface.GetLobbyInterface().AddNotifyLobbyMemberStatusReceived(ref notifyLobbyMemberStatusUpdateReceivedOptions, null, OnLobbyMemberUpdate);
+            var notifyPeerConnectionClosedOptions = new AddNotifyPeerConnectionClosedOptions {
+                LocalUserId = _localUserId,
+                SocketId = new SocketId {
+                    SocketName = "ChangeMe"
+                }
+            };
+            _addNotifyPeerConnectionClosedHandle = _platformInterface.GetP2PInterface().AddNotifyPeerConnectionClosed(ref notifyPeerConnectionClosedOptions, null, OnPeerConnectionClosed);
+            var notifyPeerConnectionRequestOptions = new AddNotifyPeerConnectionRequestOptions {
+                LocalUserId = _localUserId,
+                SocketId = new SocketId {
+                    SocketName = "ChangeMe"
+                }
+            };
+            
+            _addNotifyPeerConnectionRequestHandle = _platformInterface.GetP2PInterface().AddNotifyPeerConnectionRequest(ref notifyPeerConnectionRequestOptions, null, OnPeerConnectionRequest);
+        }
+        
+        private void RemoveEventHandlers() {
+            _platformInterface.GetLobbyInterface().RemoveNotifyLobbyMemberStatusReceived(_addNotifyLobbyMemberStatusReceivedHandle);
+            _platformInterface.GetP2PInterface().RemoveNotifyPeerConnectionClosed(_addNotifyPeerConnectionClosedHandle);
+            _platformInterface.GetP2PInterface().RemoveNotifyPeerConnectionRequest(_addNotifyPeerConnectionRequestHandle);
+        }
+        
+        private void OnLobbyMemberUpdate(ref LobbyMemberStatusReceivedCallbackInfo lobbyMemberUpdateReceivedCallbackInfo) {
+            Debug.Log("Lobby member update received");
+            switch (lobbyMemberUpdateReceivedCallbackInfo.CurrentStatus) {
+                case LobbyMemberStatus.Joined:
+                    _remoteUserIds.Add(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
+                    break;
+                case LobbyMemberStatus.Left:
+                    _remoteUserIds.Remove(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
+                    break;
+                case LobbyMemberStatus.Disconnected:
+                    _remoteUserIds.Remove(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
+                    break;
+                case LobbyMemberStatus.Kicked:
+                    _remoteUserIds.Remove(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
+                    break;
+                case LobbyMemberStatus.Promoted:
+                    _lobbyOwnerUserId = lobbyMemberUpdateReceivedCallbackInfo.TargetUserId;
+                    break;
+                case LobbyMemberStatus.Closed:
+                    _remoteUserIds.Remove(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
+                    break;
+            }
+        }
+        
+        private void OnPeerConnectionClosed (ref OnRemoteConnectionClosedInfo peerConnectionClosedCallbackInfo) {
+            Debug.Log("Peer connection closed " + peerConnectionClosedCallbackInfo.RemoteUserId);
+            _remoteUserIds.Remove(peerConnectionClosedCallbackInfo.RemoteUserId);
+        }
+        
+        private void OnPeerConnectionRequest (ref OnIncomingConnectionRequestInfo peerConnectionRequestCallbackInfo) {
+            Debug.Log("Peer connection request " + peerConnectionRequestCallbackInfo.RemoteUserId);
+            _remoteUserIds.Add(peerConnectionRequestCallbackInfo.RemoteUserId);
+        }
+
         public void Uninitialize(Action<ResultData> onComplete = null) {
             if (_platformInterface != null) {
+                RemoveEventHandlers();
                 _platformInterface.Release();
                 _platformInterface = null;
                 PlatformInterface.Shutdown();
@@ -230,7 +300,7 @@ namespace App.Scripts.Netcode.Backends.EOS {
             });
         }
 
-        private protected override void CreateLobbyInternal(string lobbyName, Action<Results> callback = null) {
+        private protected override void CreateLobbyInternal(string lobbyName, Action<Results, LobbyData> callback = null) {
             lobbyManager ??= new LobbyManager(_platformInterface, _localUserId);
 
             var createLobbyOptions = new CreateLobbyOptions {
@@ -242,7 +312,7 @@ namespace App.Scripts.Netcode.Backends.EOS {
 
             lobbyManager.CreateLobby(createLobbyOptions, info => {
                 if (info.ResultCode != Result.Success) {
-                    callback?.Invoke(Results.Failure);
+                    callback?.Invoke(Results.Failure, new LobbyData());
                     return;
                 }
                 
@@ -258,9 +328,139 @@ namespace App.Scripts.Netcode.Backends.EOS {
                     Visibility = LobbyAttributeVisibility.Public
                 };
                 lobbyManager.SetLobbyAttribute(updateLobbyModificationOptions, attribute, () => {
-                    callback?.Invoke(Results.Success);
+                    lobbyManager.GetLobby(info.LobbyId, (lobby) => {
+                        var data = new LobbyData {
+                            uuid = info.LobbyId,
+                            name = lobbyName,
+                            maxPlayers = 10,
+                            playerCount = 1
+                        };
+                        
+                        lobby.Release();
+                        callback?.Invoke(Results.Success, data);
+                    });
                 });
             });
+        }
+
+        private protected override void JoinLobbyInternal(string lobbyId, Action<Results, LobbyData> callback = null) {
+            lobbyManager ??= new LobbyManager(_platformInterface, _localUserId);
+
+            lobbyManager.GetLobby(lobbyId, details => {
+                var joinLobbyOptions = new JoinLobbyOptions {
+                    LobbyDetailsHandle = details,
+                    LocalUserId = _localUserId,
+                    PresenceEnabled = false,
+                    LocalRTCOptions = null
+                };
+                lobbyManager.JoinLobby(joinLobbyOptions, info => {
+                    if (info.ResultCode != Result.Success) {
+                        callback?.Invoke(Results.Failure, new LobbyData());
+                        return;
+                    }
+                    
+                    lobbyManager.GetLobby(lobbyId, lobby => {
+                        var lobbyDetailsCopyInfoOptions = new LobbyDetailsCopyInfoOptions();
+                        lobby.CopyInfo(ref lobbyDetailsCopyInfoOptions, out var lobbyDetailsInfo);
+                        var lobbyDataItem = new LobbyData {
+                            uuid = lobbyDetailsInfo?.LobbyId,
+                            maxPlayers = (int) (lobbyDetailsInfo?.MaxMembers ?? 0),
+                            playerCount = (int) (lobbyDetailsInfo?.MaxMembers ?? 0) - (int) (lobbyDetailsInfo?.AvailableSlots ?? 0)
+                        };
+                        
+                        lobby.Release();
+                        callback?.Invoke(Results.Success, lobbyDataItem);
+                    });
+                });
+            });
+        }
+
+        private protected override void LeaveLobbyInternal(string lobbyId, Action<Results> callback = null) {
+            lobbyManager ??= new LobbyManager(_platformInterface, _localUserId);
+
+            var leaveLobbyOptions = new LeaveLobbyOptions {
+                LocalUserId = _localUserId,
+                LobbyId = lobbyId
+            };
+            lobbyManager.LeaveLobby(leaveLobbyOptions, info => {
+                if (info.ResultCode != Result.Success) {
+                    callback?.Invoke(Results.Failure);
+                    return;
+                }
+                
+                callback?.Invoke(Results.Success);
+            });
+        }
+
+        private protected override void InitP2PInternal(Action<Results> callback = null) {
+            
+        }
+
+        private protected override void SendInternal(string userId, byte[] data, PacketReliability reliability) {
+            var remoteUser = ProductUserId.FromString(userId);
+            var packetReliability = reliability switch {
+                PacketReliability.UnreliableUnordered => Epic.OnlineServices.P2P.PacketReliability.UnreliableUnordered,
+                PacketReliability.ReliableOrdered => Epic.OnlineServices.P2P.PacketReliability.ReliableOrdered,
+                PacketReliability.ReliableUnordered => Epic.OnlineServices.P2P.PacketReliability.ReliableUnordered,
+                _ => Epic.OnlineServices.P2P.PacketReliability.ReliableOrdered
+            };
+            var sendOptions = new SendPacketOptions {
+                LocalUserId = _localUserId,
+                RemoteUserId = remoteUser,
+                SocketId = new SocketId {
+                    SocketName = "ChangeMe"
+                },
+                Channel = 0,
+                Data = data,
+                AllowDelayedDelivery = false,
+                Reliability = packetReliability,
+                DisableAutoAcceptConnection = false,
+            };
+
+            _p2PInterface.SendPacket(ref sendOptions);
+        }
+
+        private protected override void SendToAllInternal(byte[] data, PacketReliability reliability) {
+            foreach (var remoteUser in _remoteUserIds) {
+                SendInternal(remoteUser.ToString(), data, reliability);
+            }
+        }
+        
+        GetNextReceivedPacketSizeOptions _getNextReceivedPacketSizeOptions = new GetNextReceivedPacketSizeOptions();
+        ReceivedData _badData = new ReceivedData {
+            success = false,
+            fromUserId = null,
+            data = new byte[] {
+            }
+        };
+        private protected override ReceivedData ReceiveInternal() {
+            _getNextReceivedPacketSizeOptions.LocalUserId = _localUserId;
+            _getNextReceivedPacketSizeOptions.RequestedChannel = 0;
+            _p2PInterface.GetNextReceivedPacketSize(ref _getNextReceivedPacketSizeOptions, out var sizeInfo);
+            if (sizeInfo <= 0) {
+                return _badData;
+            }
+
+            var receiveOptions = new ReceivePacketOptions {
+                LocalUserId = _localUserId,
+                MaxDataSizeBytes = 8192,
+                RequestedChannel = 0
+            };
+            
+            var data = new byte[sizeInfo];
+            var dataSegment = new ArraySegment<byte>(data);
+            var result = _p2PInterface.ReceivePacket(ref receiveOptions, out var peerId,
+                out var socketId, out var outChannel, dataSegment, out var bytesWritten);
+            
+            if (result != Result.Success) {
+                return _badData;
+            }
+            
+            return new ReceivedData {
+                success = true,
+                fromUserId = peerId.ToString(),
+                data = dataSegment.ToArray()
+            };
         }
     }
 }
