@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using App.Scripts.Netcode.Base;
 using App.Scripts.Netcode.Helpers;
@@ -223,16 +224,19 @@ namespace App.Scripts.Netcode.Backends.EOS {
                     _remoteUserIds.Remove(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
                     break;
             }
+            OnPlayersChanged?.Invoke();
         }
         
         private void OnPeerConnectionClosed (ref OnRemoteConnectionClosedInfo peerConnectionClosedCallbackInfo) {
             Debug.Log("Peer connection closed " + peerConnectionClosedCallbackInfo.RemoteUserId);
             _remoteUserIds.Remove(peerConnectionClosedCallbackInfo.RemoteUserId);
+            OnPlayersChanged?.Invoke();
         }
         
         private void OnPeerConnectionRequest (ref OnIncomingConnectionRequestInfo peerConnectionRequestCallbackInfo) {
             Debug.Log("Peer connection request " + peerConnectionRequestCallbackInfo.RemoteUserId);
             _remoteUserIds.Add(peerConnectionRequestCallbackInfo.RemoteUserId);
+            OnPlayersChanged?.Invoke();
         }
 
         public void Uninitialize(Action<ResultData> onComplete = null) {
@@ -261,9 +265,11 @@ namespace App.Scripts.Netcode.Backends.EOS {
         private LobbyManager lobbyManager;
         private const string LobbyNameKey = "LOBBYNAME";
 
+        public override event Action OnPlayersChanged;
+
         private protected override void GetLobbyListInternal(int maxResults = 10, Action<Results, List<LobbyData>> callback = null) {
             lobbyManager ??= new LobbyManager(_platformInterface, _localUserId);
-            
+            OnPlayersChanged?.Invoke();
             var createLobbySearchOptions = new CreateLobbySearchOptions {
                 MaxResults = (uint) maxResults
             };
@@ -461,6 +467,10 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 fromUserId = peerId.ToString(),
                 data = dataSegment.ToArray()
             };
+        }
+
+        public override List<string> GetRemotePlayerIds() {
+            return new List<string>(_remoteUserIds.Select(x => x.ToString()));
         }
     }
 }

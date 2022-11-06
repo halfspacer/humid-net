@@ -11,7 +11,8 @@ namespace App.Scripts.Netcode.Base {
         private bool _isAuthenticated;
         private LobbyData _currentLobby;
         private List<NetworkedMonobehaviour> _networkedMonobehaviours = new List<NetworkedMonobehaviour>();
-        
+        public abstract event Action OnPlayersChanged; 
+
         public void Subscribe<T>(T networkedMonobehaviour) where T : NetworkedMonobehaviour {
             _networkedMonobehaviours.Add(networkedMonobehaviour);
         }
@@ -231,5 +232,7 @@ namespace App.Scripts.Netcode.Base {
                 networkedMonobehaviour.OnDataReceived(receivedData);
             }
         }
+
+        public abstract List<string> GetRemotePlayerIds();
     }
 }

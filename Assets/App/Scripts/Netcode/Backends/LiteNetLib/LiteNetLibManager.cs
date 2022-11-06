@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using App.Scripts.Netcode.Base;
 using App.Scripts.Netcode.Helpers;
@@ -10,12 +11,22 @@ using UnityEngine;
 
 public class LiteNetLibManager : NetworkManager, IInitialize, IUninitialize, ITick {
     private NetManager _client;
-    
+    private Queue<ReceivedData> _receivedData = new Queue<ReceivedData>();
+
     public void Initialize(Action<ResultData> onComplete = null) {
         var listener = new EventBasedNetListener();
         _client = new NetManager(listener);
         if (_client.Start(9050)) {
             Debug.Log("Server started");
+            
+            listener.NetworkReceiveEvent += (fromPeer, dataReader, deliveryMethod) => {
+                var data = dataReader.RawData;
+                _receivedData.Enqueue(new ReceivedData {
+                    success = true,
+                    fromUserId = fromPeer.EndPoint.ToString(),
+                    data = data
+                });
+            };
             
             listener.PeerConnectedEvent += peer => {
                 Debug.Log(("We got connection: {0}", peer.EndPoint)); // Show peer ip
@@ -34,10 +45,23 @@ public class LiteNetLibManager : NetworkManager, IInitialize, IUninitialize, ITi
             Debug.Log("Client start failed");
             _client.Start();
             listener.NetworkReceiveEvent += (fromPeer, dataReader, deliveryMethod) => {
-                var stringData = dataReader.GetString(100); // Read string with max length 100
-                Debug.Log(stringData);
-                dataReader.Recycle();
+                var data = dataReader.RawData;
+                _receivedData.Enqueue(new ReceivedData {
+                    success = true,
+                    fromUserId = fromPeer.EndPoint.ToString(),
+                    data = data
+                });
             };
+
+            listener.PeerConnectedEvent += peer => {
+                
+                OnPlayersChanged?.Invoke();
+            };
+            
+            listener.PeerDisconnectedEvent += (peer, info) => {
+                OnPlayersChanged?.Invoke();
+            };
+            
             var netPeer = _client.Connect("localhost" /* host ip or name */, 9050 /* port */, "SomeConnectionKey" /* text key or NetDataWriter */);
         }
 
@@ -60,6 +84,8 @@ public class LiteNetLibManager : NetworkManager, IInitialize, IUninitialize, ITi
             message = "Uninitialized"
         });
     }
+
+    public override event Action OnPlayersChanged;
 
     private protected override void GetLobbyListInternal(int maxResults = 10, Action<Results, List<LobbyData>> callback = null) {
         var list = new List<LobbyData>();
@@ -91,19 +117,32 @@ public class LiteNetLibManager : NetworkManager, IInitialize, IUninitialize, ITi
     }
 
     private protected override void SendInternal(string userId, byte[] data, PacketReliability reliability) {
-         
+         _client.ConnectedPeerList.Where(x => x.EndPoint.ToString() == userId).ToList().ForEach(x => {
+             var deliveryMethod = reliability switch {
+                 PacketReliability.UnreliableUnordered => DeliveryMethod.Unreliable,
+                 PacketReliability.ReliableUnordered => DeliveryMethod.ReliableUnordered,
+                 PacketReliability.ReliableOrdered => DeliveryMethod.ReliableOrdered,
+                 _ => DeliveryMethod.ReliableOrdered
+             };
+
+             var writer = new NetDataWriter();
+             writer.Put(data);
+             x.Send(writer, deliveryMethod);
+         });
     }
 
     private protected override void SendToAllInternal(byte[] data, PacketReliability reliability) {
-        
+        _client.SendToAll(data, reliability switch {
+            PacketReliability.UnreliableUnordered => DeliveryMethod.Unreliable,
+            PacketReliability.ReliableUnordered => DeliveryMethod.ReliableUnordered,
+            PacketReliability.ReliableOrdered => DeliveryMethod.ReliableOrdered,
+            _ => DeliveryMethod.ReliableOrdered
+        });
     }
 
     private protected override ReceivedData ReceiveInternal() {
-        return new ReceivedData {
-            success = false,
-            fromUserId = null,
-            data = new byte[] {
-            }
-        };
+        return _receivedData.Count > 0 ? _receivedData.Dequeue() : new ReceivedData();
     }
+
+    public override List<string> GetRemotePlayerIds() => _client.ConnectedPeerList.Select(peer => peer.EndPoint.ToString()).ToList();
 }
