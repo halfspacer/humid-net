@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using App.Scripts.Netcode.Base;
 using App.Scripts.Netcode.Helpers;
@@ -58,5 +59,22 @@ public class LiteNetLibManager : NetworkManager, IInitialize, IUninitialize, ITi
             result = Results.Success,
             message = "Uninitialized"
         });
+    }
+
+    private protected override void GetLobbyListInternal(int maxResults = 10, Action<Results, List<LobbyData>> callback = null) {
+        var list = new List<LobbyData>();
+        var lobby = new LobbyData {
+            name = "Untitled Lobby",
+            maxPlayers = 10,
+            mapName = "N/A",
+            uuid = "localhost",
+            playerCount = 1
+        };
+        list.Add(lobby);
+        callback?.Invoke(Results.Success, list);
+    }
+
+    private protected override void CreateLobbyInternal(string lobbyName, Action<Results> callback = null) {
+        callback?.Invoke(Results.Failure);
     }
 }
