@@ -11,6 +11,7 @@ using Epic.OnlineServices.Lobby;
 using Epic.OnlineServices.Logging;
 using Epic.OnlineServices.P2P;
 using Epic.OnlineServices.Platform;
+using UnityEditor;
 using UnityEngine;
 using Credentials = Epic.OnlineServices.Connect.Credentials;
 using LoginOptions = Epic.OnlineServices.Connect.LoginOptions;
@@ -119,11 +120,15 @@ namespace App.Scripts.Netcode.Backends.EOS {
 
         public void Initialize(Action<ResultData> onComplete) {
 #if UNITY_EDITOR
-            const string libraryPath = "Assets/Plugins/EOS/Bin/" + Config.LibraryName;
 
-            _libraryPointer = LoadLibrary(libraryPath);
+            //Find the library path
+            var pathToLibrary = AssetDatabase.FindAssets(Config.LibraryName)
+                .Select(AssetDatabase.GUIDToAssetPath)
+                .FirstOrDefault();
+            
+            _libraryPointer = LoadLibrary(pathToLibrary);
             if (_libraryPointer == IntPtr.Zero) {
-                throw new Exception("Failed to load library" + libraryPath);
+                throw new Exception("Failed to load library" + pathToLibrary);
             }
 
             Bindings.Hook(_libraryPointer, GetProcAddress);
