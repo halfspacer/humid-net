@@ -6,6 +6,7 @@ using App.Scripts.Netcode.Base;
 using App.Scripts.Netcode.Helpers;
 using App.Scripts.Netcode.Interfaces;
 using Epic.OnlineServices;
+using Epic.OnlineServices.Auth;
 using Epic.OnlineServices.Connect;
 using Epic.OnlineServices.Lobby;
 using Epic.OnlineServices.Logging;
@@ -14,6 +15,7 @@ using Epic.OnlineServices.Platform;
 using UnityEditor;
 using UnityEngine;
 using Credentials = Epic.OnlineServices.Connect.Credentials;
+using LoginCallbackInfo = Epic.OnlineServices.Connect.LoginCallbackInfo;
 using LoginOptions = Epic.OnlineServices.Connect.LoginOptions;
 
 namespace App.Scripts.Netcode.Backends.EOS {
@@ -33,9 +35,19 @@ namespace App.Scripts.Netcode.Backends.EOS {
         [SerializeField] private string clientSecret = "";
         private float _platformTickTimer;
         private ProductUserId _localUserId;
+        private string _localUserIdString;
         private HashSet<ProductUserId> _remoteUserIds = new HashSet<ProductUserId>();
+        private HashSet<string> _remoteUserIdStrings = new HashSet<string>();
         private ProductUserId _lobbyOwnerUserId;
+        private string _lobbyOwnerUserIdString;
         private P2PInterface _p2PInterface;
+        [SerializeField] private DebugAccount debugAccount;
+
+        enum DebugAccount {
+            test_user_cred,
+            test_user_cred2,
+            None
+        }
 
         // If we're in editor, we should dynamically load and unload the SDK between play sessions.
         // This allows us to initialize the SDK each time the game is run in editor.
@@ -61,9 +73,39 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 }
             }
         }
+        
+        private void AddUserIdMapping(ProductUserId remoteUserId) {
+            if (remoteUserId == null) {
+                return;
+            }
+            _remoteUserIds.Add(remoteUserId);
+            _remoteUserIdStrings.Add(remoteUserId.ToString());
+        }
+        
+        private void RemoveUserIdMapping(ProductUserId remoteUserId) {
+            if (remoteUserId == null) {
+                return;
+            }
+            _remoteUserIds.Remove(remoteUserId);
+            _remoteUserIdStrings.Remove(remoteUserId.ToString());
+        }
+        
+        private void SetLocalUserIdMapping(ProductUserId localUserId) {
+            _localUserId = localUserId;
+            _localUserIdString = localUserId?.ToString();
+        }
 
+        private void SetLobbyOwnerUserIdMapping(ProductUserId lobbyOwnerUserId) {
+            _lobbyOwnerUserId = lobbyOwnerUserId;
+            _lobbyOwnerUserIdString = lobbyOwnerUserId?.ToString();
+        }
+        
         public void Authenticate(Action<ResultData> callback) {
             var deviceID = SystemInfo.deviceUniqueIdentifier;
+
+            if (Debug.isDebugBuild) {
+                
+            }
             
             //Limit the length of the device ID to 32 characters or less
             if (deviceID.Length > 32) {
@@ -84,38 +126,117 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 DeviceModel = SystemInfo.deviceType.ToString(),
             };
 
-            _platformInterface.GetConnectInterface().CreateDeviceId(ref createDeviceIdOptions, null, (ref CreateDeviceIdCallbackInfo info) => {
-                if (info.ResultCode == Result.DuplicateNotAllowed) {
-                    Debug.Log("Device ID already exists");
-                }
-                else if (info.ResultCode == Result.Success) {
-                    Debug.Log("Successfully created device id");
-                }
-                else {
-                    callback?.Invoke(new ResultData {
-                        result = Results.Failure,
-                        message = "Failed to create device id"
-                    });
-                    return;
-                }
-                
-                _platformInterface.GetConnectInterface().Login(ref loginOptions, null,
-                    (ref Epic.OnlineServices.Connect.LoginCallbackInfo data) => {
-                        if (data.ResultCode == Result.Success) {
-                            _localUserId = data.LocalUserId;
-                            callback?.Invoke(new ResultData {
-                                result = Results.Success,
-                                message = "Login success"
-                            });
+            if (debugAccount != DebugAccount.None) {
+                    var debugLoginOptions = new Epic.OnlineServices.Auth.LoginOptions {
+                        Credentials = new Epic.OnlineServices.Auth.Credentials {
+                            Id = "localhost:4000",
+                            Type = LoginCredentialType.Developer,
+                            Token = Enum.GetName(debugAccount.GetType(), debugAccount)
+                        }
+                    };
+                    Debug.Log("Logging in with debug credentials");
+
+                    _platformInterface.GetAuthInterface().Login(ref debugLoginOptions, null,
+                        (ref Epic.OnlineServices.Auth.LoginCallbackInfo info) => {
+                            if (info.ResultCode == Result.Success) {
+                                Debug.Log("Successfully logged in");
+                                
+                                var copyUserAuthTokenOptions = new CopyUserAuthTokenOptions();
+                                _platformInterface.GetAuthInterface().CopyUserAuthToken(ref copyUserAuthTokenOptions, info.LocalUserId,
+                                    out var userAuthToken);
+
+                                var debugLoginOptions = new LoginOptions {
+                                    Credentials = new Credentials {
+                                        Token = userAuthToken?.AccessToken,
+                                        Type = ExternalCredentialType.Epic
+                                    },
+                                    UserLoginInfo = null
+                                };
+                                
+                                        _platformInterface.GetConnectInterface().Login(ref debugLoginOptions, null,
+                                    (ref LoginCallbackInfo info) => {
+                                        if (info.ResultCode == Result.Success) {
+                                            Debug.Log("Successfully logged in");
+                                            SetLocalUserIdMapping(info.LocalUserId);
+                                            AddEventHandlers();
+                                            callback?.Invoke(new ResultData {
+                                                result = Results.Success,
+                                                message = "Successfully logged in"
+                                            });
+                                        } else if (info.ResultCode == Result.InvalidUser) {
+                                            var options = new CreateUserOptions {
+                                                ContinuanceToken = info.ContinuanceToken
+                                            };
+                                            
+                                            _platformInterface.GetConnectInterface().CreateUser(ref options, null, (ref CreateUserCallbackInfo info) => {
+                                                if (info.ResultCode == Result.Success) {
+                                                    Debug.Log("Successfully created user");
+                                                    SetLocalUserIdMapping(info.LocalUserId);
+                                                    AddEventHandlers();
+                                                    callback?.Invoke(new ResultData {
+                                                        result = Results.Success,
+                                                        message = "Successfully logged in"
+                                                    });
+                                                } else {
+                                                    callback?.Invoke(new ResultData {
+                                                        result = Results.Failure,
+                                                        message = "Failed to create user"
+                                                    });
+                                                }
+                                            });
+                                        }
+                                        else {
+                                            callback?.Invoke(new ResultData {
+                                                result = Results.Failure,
+                                                message = "Failed to login"
+                                            });
+                                        }
+                                    });
+                            }
+                            else {
+                                callback?.Invoke(new ResultData {
+                                    result = Results.Failure,
+                                    message = "Failed to login"
+                                });
+                            }
+                        });
+            }
+            else {
+                _platformInterface.GetConnectInterface().CreateDeviceId(ref createDeviceIdOptions, null,
+                    (ref CreateDeviceIdCallbackInfo info) => {
+                        if (info.ResultCode == Result.DuplicateNotAllowed) {
+                            Debug.Log("Device ID already exists");
+                        }
+                        else if (info.ResultCode == Result.Success) {
+                            Debug.Log("Successfully created device id");
                         }
                         else {
                             callback?.Invoke(new ResultData {
                                 result = Results.Failure,
-                                message = "Login failed"
+                                message = "Failed to create device id"
                             });
+                            return;
                         }
+
+                        _platformInterface.GetConnectInterface().Login(ref loginOptions, null,
+                            (ref LoginCallbackInfo data) => {
+                                if (data.ResultCode == Result.Success) {
+                                    SetLocalUserIdMapping(data.LocalUserId);
+                                    callback?.Invoke(new ResultData {
+                                        result = Results.Success,
+                                        message = "Login success"
+                                    });
+                                    AddEventHandlers();
+                                }
+                                else {
+                                    callback?.Invoke(new ResultData {
+                                        result = Results.Failure,
+                                        message = "Login failed"
+                                    });
+                                }
+                            });
                     });
-            });
+            }
         }
 
         public void Initialize(Action<ResultData> onComplete) {
@@ -170,7 +291,6 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 });
             } else {
                 _p2PInterface = _platformInterface.GetP2PInterface();
-                AddEventHandlers();
                 onComplete?.Invoke(new ResultData {
                     result = Results.Success,
                     message = "Platform created"
@@ -211,22 +331,25 @@ namespace App.Scripts.Netcode.Backends.EOS {
             Debug.Log("Lobby member update received");
             switch (lobbyMemberUpdateReceivedCallbackInfo.CurrentStatus) {
                 case LobbyMemberStatus.Joined:
-                    _remoteUserIds.Add(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
+                    AddUserIdMapping(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
+                    Ping();
                     break;
                 case LobbyMemberStatus.Left:
-                    _remoteUserIds.Remove(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
+                    RemoveUserIdMapping(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
                     break;
                 case LobbyMemberStatus.Disconnected:
-                    _remoteUserIds.Remove(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
+                    RemoveUserIdMapping(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
                     break;
                 case LobbyMemberStatus.Kicked:
-                    _remoteUserIds.Remove(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
+                    RemoveUserIdMapping(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
                     break;
                 case LobbyMemberStatus.Promoted:
-                    _lobbyOwnerUserId = lobbyMemberUpdateReceivedCallbackInfo.TargetUserId;
+                    SetLobbyOwnerUserIdMapping(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
                     break;
                 case LobbyMemberStatus.Closed:
-                    _remoteUserIds.Remove(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
+                    RemoveUserIdMapping(lobbyMemberUpdateReceivedCallbackInfo.TargetUserId);
+                    break;
+                default:
                     break;
             }
             OnPlayersChanged?.Invoke();
@@ -240,8 +363,18 @@ namespace App.Scripts.Netcode.Backends.EOS {
         
         private void OnPeerConnectionRequest (ref OnIncomingConnectionRequestInfo peerConnectionRequestCallbackInfo) {
             Debug.Log("Peer connection request " + peerConnectionRequestCallbackInfo.RemoteUserId);
-            _remoteUserIds.Add(peerConnectionRequestCallbackInfo.RemoteUserId);
+            AddUserIdMapping(peerConnectionRequestCallbackInfo.RemoteUserId);
             OnPlayersChanged?.Invoke();
+            
+            var acceptConnectionOptions = new AcceptConnectionOptions {
+                LocalUserId = _localUserId,
+                RemoteUserId = peerConnectionRequestCallbackInfo.RemoteUserId,
+                SocketId = new SocketId {
+                    SocketName = "ChangeMe"
+                }
+            };
+            
+            _p2PInterface.AcceptConnection(ref acceptConnectionOptions);
         }
 
         public void Uninitialize(Action<ResultData> onComplete = null) {
@@ -302,13 +435,23 @@ namespace App.Scripts.Netcode.Backends.EOS {
                     if (string.IsNullOrEmpty(lobbyDataItem.name)) {
                         lobbyDataItem.name = "Unnamed Lobby";
                     }
-                    
-                    lobbyData.Add(lobbyDataItem);
+
+                    //Only add lobbies that are not empty (When someone leaves a lobby, it is not removed from the list)
+                    if (lobbyDataItem.playerCount != 0) {
+                        lobbyData.Add(lobbyDataItem);
+                    }
+
                     lobby.Release();
                 }
                 
                 callback?.Invoke(Results.Success, lobbyData);
             });
+        }
+
+        private void Ping() {
+            foreach (var userId in _remoteUserIds) {
+                SendInternal(userId.ToString(), Array.Empty<byte>(), PacketReliability.ReliableUnordered);
+            }
         }
 
         private protected override void CreateLobbyInternal(string lobbyName, Action<Results, LobbyData> callback = null) {
@@ -326,7 +469,7 @@ namespace App.Scripts.Netcode.Backends.EOS {
                     callback?.Invoke(Results.Failure, new LobbyData());
                     return;
                 }
-                
+                SetLobbyOwnerUserIdMapping(_localUserId);
                 var updateLobbyModificationOptions = new UpdateLobbyModificationOptions {
                     LocalUserId = _localUserId,
                     LobbyId = info.LobbyId
@@ -344,9 +487,11 @@ namespace App.Scripts.Netcode.Backends.EOS {
                             uuid = info.LobbyId,
                             name = lobbyName,
                             maxPlayers = 10,
-                            playerCount = 1
+                            playerCount = 1,
+                            hostId = _localUserId.ToString()
                         };
                         
+                        SetLobbyOwnerUserIdMapping(_localUserId);
                         lobby.Release();
                         callback?.Invoke(Results.Success, data);
                     });
@@ -376,9 +521,27 @@ namespace App.Scripts.Netcode.Backends.EOS {
                         var lobbyDataItem = new LobbyData {
                             uuid = lobbyDetailsInfo?.LobbyId,
                             maxPlayers = (int) (lobbyDetailsInfo?.MaxMembers ?? 0),
-                            playerCount = (int) (lobbyDetailsInfo?.MaxMembers ?? 0) - (int) (lobbyDetailsInfo?.AvailableSlots ?? 0)
+                            playerCount = (int) (lobbyDetailsInfo?.MaxMembers ?? 0) - (int) (lobbyDetailsInfo?.AvailableSlots ?? 0),
+                            hostId = lobbyDetailsInfo?.LobbyOwnerUserId.ToString()
                         };
+
+                        SetLobbyOwnerUserIdMapping(lobbyDetailsInfo?.LobbyOwnerUserId);
                         
+                        var lobbyMemberCountOptions = new LobbyDetailsGetMemberCountOptions();
+                        var memberCount = lobby.GetMemberCount(ref lobbyMemberCountOptions);
+                        
+                        for (var i = 0; i < memberCount; i++) {
+                            var getMemberByIndexOptions = new LobbyDetailsGetMemberByIndexOptions {
+                                MemberIndex = (uint) i
+                            };
+                            var prodUserId = lobby.GetMemberByIndex(ref getMemberByIndexOptions);
+                            if (prodUserId != null && prodUserId != _localUserId) {
+                                AddUserIdMapping(prodUserId);
+                            }
+                        }
+                        Ping();
+                        
+                        Debug.Log("Lobby owner: " + _lobbyOwnerUserId);
                         lobby.Release();
                         callback?.Invoke(Results.Success, lobbyDataItem);
                     });
@@ -407,61 +570,107 @@ namespace App.Scripts.Netcode.Backends.EOS {
             
         }
 
+        private SendPacketOptions _sendOptions = new SendPacketOptions {
+            LocalUserId = null,
+            RemoteUserId = null,
+            SocketId = new SocketId {
+                SocketName = "ChangeMe"
+            },
+            Channel = 0,
+            Data = default,
+            AllowDelayedDelivery = false,
+            Reliability = Epic.OnlineServices.P2P.PacketReliability.ReliableOrdered,
+            DisableAutoAcceptConnection = false,
+        };
+        
         private protected override void SendInternal(string userId, byte[] data, PacketReliability reliability) {
             var remoteUser = ProductUserId.FromString(userId);
+            var packetReliability = ConvertPacketReliability(reliability);
+
+            _sendOptions.LocalUserId = _localUserId;
+            _sendOptions.RemoteUserId = remoteUser;
+            _sendOptions.Data = data;
+            _sendOptions.Reliability = packetReliability;
+
+            _p2PInterface.SendPacket(ref _sendOptions);
+        }
+        
+        private void SendInternal(ProductUserId remoteUser, byte[] data, PacketReliability reliability) {
+            var packetReliability = ConvertPacketReliability(reliability);
+            _sendOptions.LocalUserId = _localUserId;
+            _sendOptions.RemoteUserId = remoteUser;
+            _sendOptions.Data = data;
+            _sendOptions.Reliability = packetReliability;
+
+            _p2PInterface.SendPacket(ref _sendOptions);
+        }
+
+        private static Epic.OnlineServices.P2P.PacketReliability ConvertPacketReliability(PacketReliability reliability) {
             var packetReliability = reliability switch {
                 PacketReliability.UnreliableUnordered => Epic.OnlineServices.P2P.PacketReliability.UnreliableUnordered,
                 PacketReliability.ReliableOrdered => Epic.OnlineServices.P2P.PacketReliability.ReliableOrdered,
                 PacketReliability.ReliableUnordered => Epic.OnlineServices.P2P.PacketReliability.ReliableUnordered,
                 _ => Epic.OnlineServices.P2P.PacketReliability.ReliableOrdered
             };
-            var sendOptions = new SendPacketOptions {
-                LocalUserId = _localUserId,
-                RemoteUserId = remoteUser,
-                SocketId = new SocketId {
-                    SocketName = "ChangeMe"
-                },
-                Channel = 0,
-                Data = data,
-                AllowDelayedDelivery = false,
-                Reliability = packetReliability,
-                DisableAutoAcceptConnection = false,
-            };
-
-            _p2PInterface.SendPacket(ref sendOptions);
+            return packetReliability;
         }
 
         private protected override void SendToAllInternal(byte[] data, PacketReliability reliability) {
             foreach (var remoteUser in _remoteUserIds) {
-                SendInternal(remoteUser.ToString(), data, reliability);
+                SendInternal(remoteUser, data, reliability);
             }
         }
-        
-        GetNextReceivedPacketSizeOptions _getNextReceivedPacketSizeOptions = new GetNextReceivedPacketSizeOptions();
-        ReceivedData _badData = new ReceivedData {
+
+        private readonly ReceivedData _badData = new ReceivedData {
             success = false,
             fromUserId = null,
             data = new byte[] {
             }
         };
+
+        private readonly ReceivedData _noData = new ReceivedData {
+            success = true,
+            fromUserId = null,
+            data = new byte[] {
+            }
+        };
+
+        private GetNextReceivedPacketSizeOptions _getNextReceivedPacketSizeOptions = new GetNextReceivedPacketSizeOptions {
+            LocalUserId = null,
+            RequestedChannel = null
+        };
+
+        private GetPacketQueueInfoOptions _getPackedQueueInfoOptions = new GetPacketQueueInfoOptions();
+
+        protected override int GetPacketQueueSize() {
+            _p2PInterface.GetPacketQueueInfo(ref _getPackedQueueInfoOptions, out var packetQueueInfo);
+            return (int) packetQueueInfo.IncomingPacketQueueCurrentPacketCount;
+        }
+
         private protected override ReceivedData ReceiveInternal() {
-            _getNextReceivedPacketSizeOptions.LocalUserId = _localUserId;
-            _getNextReceivedPacketSizeOptions.RequestedChannel = 0;
-            _p2PInterface.GetNextReceivedPacketSize(ref _getNextReceivedPacketSizeOptions, out var sizeInfo);
-            if (sizeInfo <= 0) {
-                return _badData;
+            if (GetPacketQueueSize() <= 0) {
+                return _noData;
+            }
+            
+            if (_getNextReceivedPacketSizeOptions.LocalUserId == null) {
+                _getNextReceivedPacketSizeOptions.LocalUserId = _localUserId;
             }
 
+            _p2PInterface.GetNextReceivedPacketSize(ref _getNextReceivedPacketSizeOptions, out var sizeInfo);
             var receiveOptions = new ReceivePacketOptions {
                 LocalUserId = _localUserId,
                 MaxDataSizeBytes = 8192,
-                RequestedChannel = 0
+                RequestedChannel = null
             };
             
             var data = new byte[sizeInfo];
             var dataSegment = new ArraySegment<byte>(data);
             var result = _p2PInterface.ReceivePacket(ref receiveOptions, out var peerId,
                 out var socketId, out var outChannel, dataSegment, out var bytesWritten);
+            
+            if (bytesWritten <= 0) {
+                return _noData;
+            }
             
             if (result != Result.Success) {
                 return _badData;
@@ -474,8 +683,10 @@ namespace App.Scripts.Netcode.Backends.EOS {
             };
         }
 
-        public override List<string> GetRemotePlayerIds() {
-            return new List<string>(_remoteUserIds.Select(x => x.ToString()));
-        }
+        public override IEnumerable<string> GetRemotePlayerIds() => _remoteUserIdStrings;
+
+        public override string GetLocalPlayerId() => _localUserIdString;
+
+        public override string GetHostId() => _lobbyOwnerUserIdString;
     }
 }

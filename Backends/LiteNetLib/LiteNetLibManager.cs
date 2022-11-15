@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -12,6 +13,7 @@ using UnityEngine;
 public class LiteNetLibManager : NetworkManager, IInitialize, IUninitialize, ITick {
     private NetManager _client;
     private Queue<ReceivedData> _receivedData = new Queue<ReceivedData>();
+    private NetPeer _localPeer;
 
     public void Initialize(Action<ResultData> onComplete = null) {
         var listener = new EventBasedNetListener();
@@ -41,6 +43,9 @@ public class LiteNetLibManager : NetworkManager, IInitialize, IUninitialize, ITi
                 else
                     request.Reject();
             };
+            
+            //Run again to also initialize as a client
+            Initialize(onComplete);
         } else {
             Debug.Log("Client start failed");
             _client.Start();
@@ -62,15 +67,14 @@ public class LiteNetLibManager : NetworkManager, IInitialize, IUninitialize, ITi
                 OnPlayersChanged?.Invoke();
             };
             
-            var netPeer = _client.Connect("localhost" /* host ip or name */, 9050 /* port */, "SomeConnectionKey" /* text key or NetDataWriter */);
+            _localPeer = _client.Connect("localhost" /* host ip or name */, 9050 /* port */, "SomeConnectionKey" /* text key or NetDataWriter */);
+            Debug.Log("Initialized");
+
+            onComplete?.Invoke(new ResultData {
+                result = Results.Success,
+                message = "Initialized"
+            });
         }
-
-        Debug.Log("Initialized");
-
-        onComplete?.Invoke(new ResultData {
-            result = Results.Success,
-            message = "Initialized"
-        });
     }
 
     public void Tick() {
@@ -140,9 +144,14 @@ public class LiteNetLibManager : NetworkManager, IInitialize, IUninitialize, ITi
         });
     }
 
+    protected override int GetPacketQueueSize() => _receivedData.Count;
+
     private protected override ReceivedData ReceiveInternal() {
         return _receivedData.Count > 0 ? _receivedData.Dequeue() : new ReceivedData();
     }
 
-    public override List<string> GetRemotePlayerIds() => _client.ConnectedPeerList.Select(peer => peer.EndPoint.ToString()).ToList();
+    public override IEnumerable<string> GetRemotePlayerIds() => _client.ConnectedPeerList.Select(x => x.EndPoint.ToString());
+    public override string GetLocalPlayerId() => _localPeer.EndPoint.ToString();
+
+    public override string GetHostId() => "localhost"; 
 }

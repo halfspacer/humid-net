@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using App.Modules.Netcode.Utils;
 using App.Scripts.Netcode.Helpers;
 using App.Scripts.Netcode.Interfaces;
 using UnityEngine;
@@ -11,7 +12,8 @@ namespace App.Scripts.Netcode.Base {
         private bool _isAuthenticated;
         private LobbyData _currentLobby;
         private List<NetworkedMonobehaviour> _networkedMonobehaviours = new List<NetworkedMonobehaviour>();
-        public abstract event Action OnPlayersChanged; 
+        public abstract event Action OnPlayersChanged;
+        public IEnumerable players = new List<string>();
 
         public void Subscribe<T>(T networkedMonobehaviour) where T : NetworkedMonobehaviour {
             _networkedMonobehaviours.Add(networkedMonobehaviour);
@@ -39,7 +41,7 @@ namespace App.Scripts.Netcode.Base {
                             _isInitialized = true;
                         }
                         else {
-                            Debug.LogError("Failed to initialize network manager");
+                            Debug.LogError("Failed to initialize network manager: " + results.message);
                         }
                     });
                 }
@@ -92,6 +94,7 @@ namespace App.Scripts.Netcode.Base {
         private void Update() {
             _tick?.Tick();
             Receive();
+            players = GetRemotePlayerIds();
         }
         
         private void OnDisable() {
@@ -201,9 +204,23 @@ namespace App.Scripts.Netcode.Base {
         private protected abstract void SendToAllInternal(byte[] data, PacketReliability reliability);
         public void SendToAll(byte[] data, PacketReliability reliability) {
             if (!_isInitialized || !_isAuthenticated || string.IsNullOrEmpty(_currentLobby.uuid)) {
+                Debug.Log("Network manager is not yet initialized or authenticated");
                 return;
             }
             
+            if (GetHostId() != GetLocalPlayerId()) {
+                Debug.Log("Only host can send to all. Forwarding to host");
+                //Add byte 255 to the start of the data to indicate that this is a broadcast message for the host, and
+                //add reliability to the second byte
+                var newData = new byte[data.Length + 2];
+                newData[0] = 255;
+                newData[1] = (byte) reliability;
+                var host = GetHostId();
+                Array.Copy(data, 0, newData, 2, data.Length);
+                Send(host, newData, reliability);
+                return;
+            }
+
             SendToAllInternal(data, reliability);
         }
         
@@ -217,22 +234,56 @@ namespace App.Scripts.Netcode.Base {
             success = false
         };
         
+        private ReceivedData _noData = new ReceivedData {
+            success = true
+        };
+        
+        protected abstract int GetPacketQueueSize();
+        
         private protected abstract ReceivedData ReceiveInternal();
         private void Receive() {
             if (!_isInitialized || !_isAuthenticated || string.IsNullOrEmpty(_currentLobby.uuid)) {
                 return;
             }
-            
-            var receivedData = ReceiveInternal();
-            if (!receivedData.success) {
-                return;
-            }
 
-            foreach (var networkedMonobehaviour in _networkedMonobehaviours) {
-                networkedMonobehaviour.OnDataReceived(receivedData);
-            }
+            while (GetPacketQueueSize() > 0) {
+                var receivedData = ReceiveInternal();
+                if (!receivedData.success) {
+                    Debug.Log("Failed to receive data");
+                    return;
+                }
+                
+                if (receivedData.data == null || receivedData.data.Length == 0) {
+                    return;
+                }
+
+                //Only accept packets from the host if not the host ourselves
+                if (GetHostId() != GetLocalPlayerId() && receivedData.fromUserId != GetHostId()) return;
+                
+                //Check if first byte is 255
+                if (receivedData.data[0] == 255 && GetHostId() == GetLocalPlayerId() && receivedData.fromUserId != GetLocalPlayerId()) {
+                    Debug.Log("Received broadcast message from " + receivedData.fromUserId);
+                    //Second byte is the packet type
+                    var packetType = (PacketReliability) receivedData.data[1];
+                    //Strip first two bytes and forward to all clients
+                    var newData = new byte[receivedData.data.Length - 2];
+                    Array.Copy(receivedData.data, 2, newData, 0, newData.Length);
+                    foreach (var player in GetRemotePlayerIds()) {
+                        if (player == receivedData.fromUserId) continue;
+                        Send(player, newData, packetType);
+                    }
+                    
+                    receivedData.data = newData;
+                }
+                
+                foreach (var networkedMonobehaviour in _networkedMonobehaviours) {
+                    networkedMonobehaviour.OnDataReceived(receivedData);
+                } 
+            } 
         }
 
-        public abstract List<string> GetRemotePlayerIds();
+        public abstract IEnumerable<string> GetRemotePlayerIds();
+        public abstract string GetLocalPlayerId();
+        public abstract string GetHostId();
     }
 }
