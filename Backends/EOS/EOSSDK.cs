@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using App.Scripts.Netcode.Base;
@@ -12,6 +13,8 @@ using Epic.OnlineServices.Lobby;
 using Epic.OnlineServices.Logging;
 using Epic.OnlineServices.P2P;
 using Epic.OnlineServices.Platform;
+using Epic.OnlineServices.RTC;
+using Epic.OnlineServices.RTCAudio;
 using UnityEditor;
 using UnityEngine;
 using Credentials = Epic.OnlineServices.Connect.Credentials;
@@ -248,11 +251,13 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 .FirstOrDefault();
             
             _libraryPointer = LoadLibrary(pathToLibrary);
+            
             if (_libraryPointer == IntPtr.Zero) {
                 throw new Exception("Failed to load library" + pathToLibrary);
             }
 
             Bindings.Hook(_libraryPointer, GetProcAddress);
+            WindowsBindings.Hook(_libraryPointer, GetProcAddress);
 #endif
             
             var initializeOptions = new InitializeOptions {
@@ -261,11 +266,13 @@ namespace App.Scripts.Netcode.Backends.EOS {
             };
 
             var initializeResult = PlatformInterface.Initialize(ref initializeOptions);
-            if (initializeResult != Result.Success) {
+            if (initializeResult != Result.Success && initializeResult != Result.AlreadyConfigured) {
                 onComplete?.Invoke(new ResultData {
                     result = Results.Failure,
                     message = "Failed to initialize platform: " + initializeResult
                 });
+                
+                return;
             }
 
             // The SDK outputs lots of information that is useful for debugging.
@@ -273,6 +280,44 @@ namespace App.Scripts.Netcode.Backends.EOS {
             LoggingInterface.SetLogLevel(LogCategory.AllCategories, LogLevel.Warning);
             LoggingInterface.SetCallback((ref LogMessage logMessage) => Debug.Log(logMessage.Message));
 
+            #if UNITY_EDITOR || UNITY_STANDALONE_WIN
+            //Get pathToLibrary without the file name
+            var pathToAudioPlugin = Application.dataPath + "/Plugins/x86_64/xaudio2_9redist.dll";
+            if (!File.Exists(pathToAudioPlugin)) {
+                Debug.LogError("Failed to find audio plugin at " + pathToAudioPlugin);
+                pathToAudioPlugin = Application.dataPath + "/App/Modules/Netcode/Plugins/EOS/Bin/x64/xaudio2_9redist.dll";
+                
+                if (!File.Exists(pathToAudioPlugin)) {
+                    Debug.LogError("Failed to find audio plugin at " + pathToAudioPlugin);
+                }
+            }
+            var options = new WindowsOptions {
+                Reserved = default,
+                ProductId = productId,
+                SandboxId = sandboxId,
+                DeploymentId = deploymentId,
+                #if UNITY_EDITOR_WIN
+                Flags = PlatformFlags.LoadingInEditor,
+                #else
+                Flags = PlatformFlags.DisableOverlay,
+                #endif
+                CacheDirectory = null,
+                TickBudgetInMilliseconds = 0,
+                ClientCredentials = new ClientCredentials() {
+                    ClientId = clientId,
+                    ClientSecret = clientSecret
+                },
+                RTCOptions = new WindowsRTCOptions {
+                    PlatformSpecificOptions = new WindowsRTCOptionsPlatformSpecificOptions {
+                        XAudio29DllPath = pathToAudioPlugin
+                    }
+                },
+                IsServer = false,
+                EncryptionKey = null,
+                OverrideCountryCode = null,
+                OverrideLocaleCode = null
+            };
+#else
             var options = new Options {
                 ProductId = productId,
                 SandboxId = sandboxId,
@@ -282,13 +327,17 @@ namespace App.Scripts.Netcode.Backends.EOS {
                     ClientSecret = clientSecret
                 }
             };
+            #endif
 
             _platformInterface = PlatformInterface.Create(ref options);
+            _platformInterface.SetApplicationStatus(ApplicationStatus.Foreground);
+            _platformInterface.SetNetworkStatus(NetworkStatus.Online);
             if (_platformInterface == null) {
                 onComplete?.Invoke(new ResultData {
                     result = Results.Failure,
                     message = "Failed to create platform"
                 });
+                Debug.LogError("Failed to create platform");
             } else {
                 _p2PInterface = _platformInterface.GetP2PInterface();
                 onComplete?.Invoke(new ResultData {
@@ -301,6 +350,7 @@ namespace App.Scripts.Netcode.Backends.EOS {
         private ulong _addNotifyLobbyMemberStatusReceivedHandle;
         private ulong _addNotifyPeerConnectionClosedHandle;
         private ulong _addNotifyPeerConnectionRequestHandle;
+        private ulong _addNotifyRTCConnectionStateChangedHandle;
         private void AddEventHandlers() {
             var notifyLobbyMemberStatusUpdateReceivedOptions = new AddNotifyLobbyMemberStatusReceivedOptions();
             _addNotifyLobbyMemberStatusReceivedHandle = _platformInterface.GetLobbyInterface().AddNotifyLobbyMemberStatusReceived(ref notifyLobbyMemberStatusUpdateReceivedOptions, null, OnLobbyMemberUpdate);
@@ -310,14 +360,18 @@ namespace App.Scripts.Netcode.Backends.EOS {
                     SocketName = "ChangeMe"
                 }
             };
-            _addNotifyPeerConnectionClosedHandle = _platformInterface.GetP2PInterface().AddNotifyPeerConnectionClosed(ref notifyPeerConnectionClosedOptions, null, OnPeerConnectionClosed);
+            var renderOptions = new AddNotifyAudioBeforeRenderOptions {
+                LocalUserId = _localUserId,
+                RoomName = null,
+                UnmixedAudio = false
+            };
             var notifyPeerConnectionRequestOptions = new AddNotifyPeerConnectionRequestOptions {
                 LocalUserId = _localUserId,
                 SocketId = new SocketId {
                     SocketName = "ChangeMe"
                 }
             };
-            
+            _addNotifyPeerConnectionClosedHandle = _p2PInterface.AddNotifyPeerConnectionClosed(ref notifyPeerConnectionClosedOptions, null, OnPeerConnectionClosed);
             _addNotifyPeerConnectionRequestHandle = _platformInterface.GetP2PInterface().AddNotifyPeerConnectionRequest(ref notifyPeerConnectionRequestOptions, null, OnPeerConnectionRequest);
         }
         
@@ -354,7 +408,7 @@ namespace App.Scripts.Netcode.Backends.EOS {
             }
             OnPlayersChanged?.Invoke();
         }
-        
+
         private void OnPeerConnectionClosed (ref OnRemoteConnectionClosedInfo peerConnectionClosedCallbackInfo) {
             Debug.Log("Peer connection closed " + peerConnectionClosedCallbackInfo.RemoteUserId);
             _remoteUserIds.Remove(peerConnectionClosedCallbackInfo.RemoteUserId);
@@ -390,6 +444,7 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 return;
             }
 
+            WindowsBindings.Unhook();
             Bindings.Unhook();
 
             // Free until the module ref count is 0
@@ -461,7 +516,13 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 LocalUserId = _localUserId,
                 MaxLobbyMembers = 10,
                 PermissionLevel = LobbyPermissionLevel.Publicadvertised,
-                BucketId = "default"
+                BucketId = "default",
+                EnableRTCRoom = true,
+                LocalRTCOptions = new LocalRTCOptions {
+                    UseManualAudioInput = false,
+                    UseManualAudioOutput = true,
+                    LocalAudioDeviceInputStartsMuted = false
+                }
             };
 
             lobbyManager.CreateLobby(createLobbyOptions, info => {
@@ -491,7 +552,14 @@ namespace App.Scripts.Netcode.Backends.EOS {
                             hostId = _localUserId.ToString()
                         };
                         
+                        var getRTCOptions = new GetRTCRoomNameOptions {
+                            LobbyId = info.LobbyId,
+                            LocalUserId = _localUserId
+                        };
+                        _platformInterface.GetLobbyInterface().GetRTCRoomName(ref getRTCOptions, out var rtcRoomName);
+                        data.rtcRoomName = rtcRoomName;
                         SetLobbyOwnerUserIdMapping(_localUserId);
+                        InitializeRTC(rtcRoomName);
                         lobby.Release();
                         callback?.Invoke(Results.Success, data);
                     });
@@ -507,7 +575,12 @@ namespace App.Scripts.Netcode.Backends.EOS {
                     LobbyDetailsHandle = details,
                     LocalUserId = _localUserId,
                     PresenceEnabled = false,
-                    LocalRTCOptions = null
+                    LocalRTCOptions = new LocalRTCOptions {
+                        Flags = 0,
+                        UseManualAudioInput = false,
+                        UseManualAudioOutput = true,
+                        LocalAudioDeviceInputStartsMuted = false
+                    }
                 };
                 lobbyManager.JoinLobby(joinLobbyOptions, info => {
                     if (info.ResultCode != Result.Success) {
@@ -526,7 +599,15 @@ namespace App.Scripts.Netcode.Backends.EOS {
                         };
 
                         SetLobbyOwnerUserIdMapping(lobbyDetailsInfo?.LobbyOwnerUserId);
-                        
+
+                        var getRTCOptions = new GetRTCRoomNameOptions {
+                            LobbyId = lobbyId,
+                            LocalUserId = _localUserId
+                        };
+                        _platformInterface.GetLobbyInterface().GetRTCRoomName(ref getRTCOptions, out var rtcRoomName);
+                        lobbyDataItem.rtcRoomName = rtcRoomName;
+                        InitializeRTC(rtcRoomName);
+
                         var lobbyMemberCountOptions = new LobbyDetailsGetMemberCountOptions();
                         var memberCount = lobby.GetMemberCount(ref lobbyMemberCountOptions);
                         
@@ -688,5 +769,25 @@ namespace App.Scripts.Netcode.Backends.EOS {
         public override string GetLocalPlayerId() => _localUserIdString;
 
         public override string GetHostId() => _lobbyOwnerUserIdString;
+
+        private ulong _addNotifyAudioBeforeRenderEvent;
+        private void InitializeRTC(string roomName) {
+            var audioBeforeRenderOptions = new AddNotifyAudioBeforeRenderOptions {
+                LocalUserId = _localUserId,
+                RoomName = roomName,
+                UnmixedAudio = true
+            };
+            _platformInterface.GetRTCInterface().GetAudioInterface()
+                .AddNotifyAudioBeforeRender(ref audioBeforeRenderOptions, null,
+                    (ref AudioBeforeRenderCallbackInfo data) => {
+                        VoiceManager.Instance.EnqueueAudioFrame(data.ParticipantId, data.Buffer.Value.Frames);
+                    });
+            
+        }
+
+        private void DeinitializeRTC() {
+            _platformInterface.GetRTCInterface().GetAudioInterface()
+                .RemoveNotifyAudioBeforeRender(_addNotifyAudioBeforeRenderEvent);
+        }
     }
 }

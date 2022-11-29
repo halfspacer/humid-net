@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Text;
 using App.Modules.Netcode.Utils;
 using App.Scripts.Netcode.Helpers;
 using App.Scripts.Netcode.Interfaces;
@@ -12,6 +13,7 @@ namespace App.Scripts.Netcode.Base {
         private bool _isAuthenticated;
         private LobbyData _currentLobby;
         private List<NetworkedMonobehaviour> _networkedMonobehaviours = new List<NetworkedMonobehaviour>();
+        private NetSerializer _serializer = new NetSerializer();
         public abstract event Action OnPlayersChanged;
         public IEnumerable players = new List<string>();
 
@@ -102,7 +104,13 @@ namespace App.Scripts.Netcode.Base {
             //Uninitialize if class implements IUninitialize
             (this as IUninitialize)?.Uninitialize();
         }
-        
+
+        private void OnApplicationQuit() {
+            if (!gameObject.activeSelf) return;
+            //Uninitialize if class implements IUninitialize
+            (this as IUninitialize)?.Uninitialize();
+        }
+
         private protected abstract void GetLobbyListInternal(int maxResults = 10, Action<Results, List<LobbyData>> callback = null);
         private struct CallQueue {
             public DateTime time;
@@ -197,31 +205,42 @@ namespace App.Scripts.Netcode.Base {
             if (!_isInitialized || !_isAuthenticated || string.IsNullOrEmpty(_currentLobby.uuid)) {
                 return;
             }
-            
+
             SendInternal(userId, data, reliability);
         }
-        
+
+        private byte[] AppendUserId(byte[] data) {
+            //Append the user id to the beginning of the data
+            var playerId = GetLocalPlayerId();
+            var playerIdBytesFromString = Encoding.UTF8.GetBytes(playerId);
+            var dataWithId = new byte[playerIdBytesFromString.Length + 1 + data.Length];
+            dataWithId[0] = (byte) playerIdBytesFromString.Length;
+            Array.Copy(playerIdBytesFromString, 0, dataWithId, 1, playerIdBytesFromString.Length);
+            Array.Copy(data, 0, dataWithId, playerIdBytesFromString.Length + 1, data.Length);
+            return dataWithId;
+        }
+
         private protected abstract void SendToAllInternal(byte[] data, PacketReliability reliability);
         public void SendToAll(byte[] data, PacketReliability reliability) {
             if (!_isInitialized || !_isAuthenticated || string.IsNullOrEmpty(_currentLobby.uuid)) {
-                Debug.Log("Network manager is not yet initialized or authenticated");
                 return;
             }
             
             if (GetHostId() != GetLocalPlayerId()) {
-                Debug.Log("Only host can send to all. Forwarding to host");
+                var newDataWithId = AppendUserId(data);
                 //Add byte 255 to the start of the data to indicate that this is a broadcast message for the host, and
                 //add reliability to the second byte
-                var newData = new byte[data.Length + 2];
+                var newData = new byte[newDataWithId.Length + 2];
                 newData[0] = 255;
                 newData[1] = (byte) reliability;
                 var host = GetHostId();
-                Array.Copy(data, 0, newData, 2, data.Length);
+                Array.Copy(newDataWithId, 0, newData, 2, newDataWithId.Length);
                 Send(host, newData, reliability);
                 return;
             }
-
-            SendToAllInternal(data, reliability);
+            
+            var dataWithId = AppendUserId(data);
+            SendToAllInternal(dataWithId, reliability);
         }
         
         public struct ReceivedData {
@@ -260,23 +279,41 @@ namespace App.Scripts.Netcode.Base {
                 //Only accept packets from the host if not the host ourselves
                 if (GetHostId() != GetLocalPlayerId() && receivedData.fromUserId != GetHostId()) return;
                 
+                bool IsHostAndPacketBroadcast() => receivedData.data[0] == 255 && GetHostId() == GetLocalPlayerId() &&
+                                receivedData.fromUserId != GetLocalPlayerId();
+                
                 //Check if first byte is 255
-                if (receivedData.data[0] == 255 && GetHostId() == GetLocalPlayerId() && receivedData.fromUserId != GetLocalPlayerId()) {
-                    Debug.Log("Received broadcast message from " + receivedData.fromUserId);
+                byte[] newData;
+                if (IsHostAndPacketBroadcast()) {
                     //Second byte is the packet type
                     var packetType = (PacketReliability) receivedData.data[1];
-                    //Strip first two bytes and forward to all clients
-                    var newData = new byte[receivedData.data.Length - 2];
-                    Array.Copy(receivedData.data, 2, newData, 0, newData.Length);
+                    
+                    //Strip first two bytes
+                    newData = new byte[receivedData.data.Length - 2];
+
+                    Array.Copy(receivedData.data, 2, newData, 0, receivedData.data.Length - 2);
+                    receivedData.data = newData;
+                    
                     foreach (var player in GetRemotePlayerIds()) {
                         if (player == receivedData.fromUserId) continue;
                         Send(player, newData, packetType);
                     }
-                    
-                    receivedData.data = newData;
                 }
                 
-                foreach (var networkedMonobehaviour in _networkedMonobehaviours) {
+                var userIdLength = (int) receivedData.data[0];
+
+                //Strip first byte and the user id
+                newData = new byte[receivedData.data.Length - userIdLength - 1];
+
+                //Get the user id
+                var userId = Encoding.UTF8.GetString(receivedData.data, 1, userIdLength);
+                
+                Array.Copy(receivedData.data, 1 + userIdLength, newData, 0, newData.Length);
+                
+                receivedData.fromUserId = userId;
+                receivedData.data = newData;
+
+                foreach (var networkedMonobehaviour in _networkedMonobehaviours) { 
                     networkedMonobehaviour.OnDataReceived(receivedData);
                 } 
             } 

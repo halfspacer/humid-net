@@ -31,6 +31,8 @@ namespace App.Scripts.Utils {
                 throw new System.Exception(string.Format("Instance of {0} already exists, removing {1}", GetType().FullName,
                     ToString()));
             }
+            
+            DontDestroyOnLoad(_instance.gameObject);
         }
 
         protected virtual void OnApplicationQuit() {
