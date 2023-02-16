@@ -41,14 +41,17 @@ namespace App.Scripts.Netcode.Base {
                     (this as IInitialize)?.Initialize((results) => {
                         if (results.result == Results.Success) {
                             _isInitialized = true;
+                            (this as IInitialize)?.OnInitializeComplete?.Invoke(results);
                         }
                         else {
                             Debug.LogError("Failed to initialize network manager: " + results.message);
+                            (this as IInitialize)?.OnInitializeComplete?.Invoke(results);
                         }
                     });
                 }
                 else {
                     _isInitialized = true;
+                    (this as IInitialize)?.OnInitializeComplete?.Invoke(new ResultData() {result = Results.Success});
                 }
 
                 //Wait for initialization
@@ -62,14 +65,17 @@ namespace App.Scripts.Netcode.Base {
                         if (results.result == Results.Success) {
                             Debug.Log("Authenticated");
                             _isAuthenticated = true;
+                            (this as IAuthenticate)?.OnAuthenticateComplete?.Invoke(results);
                         }
                         else {
                             Debug.LogError("Failed to authenticate");
+                            (this as IAuthenticate)?.OnAuthenticateComplete?.Invoke(results);
                         }
                     });
                 }
                 else {
                     _isAuthenticated = true;
+                    (this as IAuthenticate)?.OnAuthenticateComplete?.Invoke(new ResultData() {result = Results.Success});
                 }
 
                 //Wait for authentication
