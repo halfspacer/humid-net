@@ -126,7 +126,9 @@ namespace App.Scripts.Netcode.Backends.EOS {
                         Credentials = new Epic.OnlineServices.Auth.Credentials {
                             Id = "localhost:4000",
                             Type = LoginCredentialType.Developer,
-                            Token = Enum.GetName(debugAccount.GetType(), debugAccount)
+                            ExternalType = ExternalCredentialType.Epic,
+                            Token = Enum.GetName(debugAccount.GetType(),
+                                debugAccount)
                         }
                     };
                     Debug.Log("Logging in with debug credentials");

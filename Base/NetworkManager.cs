@@ -320,7 +320,7 @@ namespace App.Scripts.Netcode.Base {
                 receivedData.data = newData;
 
                 foreach (var networkedMonobehaviour in _networkedMonobehaviours) { 
-                    networkedMonobehaviour.OnDataReceived(receivedData);
+                    networkedMonobehaviour.OnDataReceivedInternal(receivedData);
                 } 
             } 
         }

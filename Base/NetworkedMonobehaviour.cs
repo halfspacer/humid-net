@@ -5,7 +5,7 @@ using UnityEngine;
 namespace App.Scripts.Netcode.Base {
     public abstract class NetworkedMonobehaviour : MonoBehaviour {
         private NetworkManager _networkManager;
-        protected NetSerializer serializer;
+        protected NetSerializer serializer = new NetSerializer();
         private const float UpdateInterval = 0.1f;
         private readonly WaitForSeconds _updateIntervalWait = new(UpdateInterval);
 
@@ -31,6 +31,11 @@ namespace App.Scripts.Netcode.Base {
         
         public abstract void OnDataReceived(NetworkManager.ReceivedData networkEvent);
         
+        public void OnDataReceivedInternal(NetworkManager.ReceivedData networkEvent) {
+            serializer.Reset();
+            OnDataReceived(networkEvent);
+        }
+        
         protected abstract void OnNetworkUpdate();
         
         private IEnumerator NetworkUpdate() {
@@ -40,6 +45,9 @@ namespace App.Scripts.Netcode.Base {
             }
         }
 
-        protected void Send(byte[] data, PacketReliability reliability) => NetManager.SendToAll(data, reliability);
+        protected void Send(byte[] data, PacketReliability reliability) {
+            NetManager.SendToAll(data, reliability);
+            serializer.Reset();
+        }
     }
 }
