@@ -79,7 +79,7 @@ namespace App.Scripts.Netcode.Backends.EOS {
         }
         
         private void AddUserIdMapping(ProductUserId remoteUserId) {
-            if (remoteUserId == null) {
+            if (remoteUserId == null || _remoteUserIds.Contains(remoteUserId)) {
                 return;
             }
             _remoteUserIds.Add(remoteUserId);
@@ -203,11 +203,11 @@ namespace App.Scripts.Netcode.Backends.EOS {
                             (ref LoginCallbackInfo data) => {
                                 if (data.ResultCode == Result.Success) {
                                     SetLocalUserIdMapping(data.LocalUserId);
+                                    AddEventHandlers();
                                     callback?.Invoke(new ResultData {
                                         result = Results.Success,
                                         message = "Login success"
                                     });
-                                    AddEventHandlers();
                                 } else if (data.ResultCode == Result.InvalidUser) {
                                     //Create user
                                     var options = new CreateUserOptions {
@@ -366,6 +366,7 @@ namespace App.Scripts.Netcode.Backends.EOS {
         private ulong _addNotifyPeerConnectionClosedHandle;
         private ulong _addNotifyPeerConnectionRequestHandle;
         private ulong _addNotifyRTCConnectionStateChangedHandle;
+        private ulong _addNotifyPeerConnectionEstablishedHandle;
         private void AddEventHandlers() {
             var notifyLobbyMemberStatusUpdateReceivedOptions = new AddNotifyLobbyMemberStatusReceivedOptions();
             _addNotifyLobbyMemberStatusReceivedHandle = _platformInterface.GetLobbyInterface().AddNotifyLobbyMemberStatusReceived(ref notifyLobbyMemberStatusUpdateReceivedOptions, null, OnLobbyMemberUpdate);
@@ -386,14 +387,24 @@ namespace App.Scripts.Netcode.Backends.EOS {
                     SocketName = "ChangeMe"
                 }
             };
+            
+            var notifyPeerConnectionEstablishedOptions = new AddNotifyPeerConnectionEstablishedOptions {
+                LocalUserId = _localUserId,
+                SocketId = new SocketId {
+                    SocketName = "ChangeMe"
+                }
+            };
             _addNotifyPeerConnectionClosedHandle = _p2PInterface.AddNotifyPeerConnectionClosed(ref notifyPeerConnectionClosedOptions, null, OnPeerConnectionClosed);
             _addNotifyPeerConnectionRequestHandle = _platformInterface.GetP2PInterface().AddNotifyPeerConnectionRequest(ref notifyPeerConnectionRequestOptions, null, OnPeerConnectionRequest);
+            _addNotifyPeerConnectionEstablishedHandle =
+                _p2PInterface.AddNotifyPeerConnectionEstablished(ref notifyPeerConnectionEstablishedOptions, null, OnPeerConnectionEstablished);
         }
         
         private void RemoveEventHandlers() {
             _platformInterface.GetLobbyInterface().RemoveNotifyLobbyMemberStatusReceived(_addNotifyLobbyMemberStatusReceivedHandle);
             _platformInterface.GetP2PInterface().RemoveNotifyPeerConnectionClosed(_addNotifyPeerConnectionClosedHandle);
             _platformInterface.GetP2PInterface().RemoveNotifyPeerConnectionRequest(_addNotifyPeerConnectionRequestHandle);
+            _platformInterface.GetP2PInterface().RemoveNotifyPeerConnectionEstablished(_addNotifyPeerConnectionEstablishedHandle);
         }
         
         private void OnLobbyMemberUpdate(ref LobbyMemberStatusReceivedCallbackInfo lobbyMemberUpdateReceivedCallbackInfo) {
@@ -444,6 +455,12 @@ namespace App.Scripts.Netcode.Backends.EOS {
             };
             
             _p2PInterface.AcceptConnection(ref acceptConnectionOptions);
+        }
+        
+        private void OnPeerConnectionEstablished (ref OnPeerConnectionEstablishedInfo peerConnectionEstablishedCallbackInfo) {
+            Debug.Log("Peer connection established " + peerConnectionEstablishedCallbackInfo.RemoteUserId);
+            AddUserIdMapping(peerConnectionEstablishedCallbackInfo.RemoteUserId);
+            OnPlayersChanged?.Invoke();
         }
 
         public void Uninitialize(Action<ResultData> onComplete = null) {
@@ -710,6 +727,10 @@ namespace App.Scripts.Netcode.Backends.EOS {
             AllowDelayedDelivery = false,
             Reliability = Epic.OnlineServices.P2P.PacketReliability.ReliableOrdered,
             DisableAutoAcceptConnection = false,
+        };
+        
+        private SocketId _socketId = new SocketId {
+            SocketName = "ChangeMe"
         };
         
         private protected override void SendInternal(string userId, byte[] data, PacketReliability reliability) {
