@@ -121,7 +121,7 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 }
             };
 
-            if (debugAccount != DebugAccount.None) {
+            if (debugAccount != DebugAccount.None && Application.isEditor) {
                     var debugLoginOptions = new Epic.OnlineServices.Auth.LoginOptions {
                         Credentials = new Epic.OnlineServices.Auth.Credentials {
                             Id = "localhost:4000",
