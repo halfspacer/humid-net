@@ -36,9 +36,11 @@ namespace App.Scripts.Netcode.Base {
             OnDataReceived(networkEvent);
         }
         
-        protected abstract void OnNetworkUpdate();
+        public abstract void OnNetworkUpdate();
         
+        public bool overrideNetworkUpdateTick = false;
         private IEnumerator NetworkUpdate() {
+            if (overrideNetworkUpdateTick) yield break;
             while (true) {
                 OnNetworkUpdate();
                 yield return _updateIntervalWait;

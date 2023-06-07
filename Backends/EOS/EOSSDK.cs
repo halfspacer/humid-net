@@ -74,6 +74,7 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 if (_platformTickTimer >= PlatformTickInterval) {
                     _platformTickTimer = 0;
                     _platformInterface.Tick();
+                    NetworkUpdate();
                 }
             }
         }
@@ -286,10 +287,12 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 
                 return;
             }
+            
+            SetNetworkUpdateOverride(true);
 
             // The SDK outputs lots of information that is useful for debugging.
             // Make sure to set up the logging interface as early as possible: after initializing.
-            LoggingInterface.SetLogLevel(LogCategory.AllCategories, LogLevel.Warning);
+            LoggingInterface.SetLogLevel(LogCategory.AllCategories, LogLevel.VeryVerbose);
             LoggingInterface.SetCallback((ref LogMessage logMessage) => Debug.Log(logMessage.Message));
 
             #if UNITY_EDITOR || UNITY_STANDALONE_WIN

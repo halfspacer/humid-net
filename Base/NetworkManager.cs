@@ -324,6 +324,28 @@ namespace App.Scripts.Netcode.Base {
                 } 
             } 
         }
+        
+        private bool _overrideNetworkUpdateTick = false;
+        protected void SetNetworkUpdateOverride(bool value) {
+            _overrideNetworkUpdateTick = value;
+            foreach (var networkedMonobehaviour in _networkedMonobehaviours) {
+                networkedMonobehaviour.overrideNetworkUpdateTick = value;
+            }
+        }
+
+        protected void NetworkUpdate() {
+            if (!_isInitialized || !_isAuthenticated) {
+                return;
+            }
+            
+            if (!_overrideNetworkUpdateTick) {
+                return;
+            }
+            
+            foreach (var networkedMonobehaviour in _networkedMonobehaviours) {
+                networkedMonobehaviour.OnNetworkUpdate();
+            }
+        }
 
         public abstract IEnumerable<string> GetRemotePlayerIds();
         public abstract string GetLocalPlayerId();
