@@ -77,6 +77,8 @@ public class LiteNetLibManager : NetworkManager, IInitialize, IUninitialize, ITi
         }
     }
 
+    public Action<ResultData> OnInitializeComplete { get; set; }
+
     public void Tick() {
         _client.PollEvents();
     }

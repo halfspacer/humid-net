@@ -45,6 +45,7 @@ namespace App.Scripts.Netcode.Backends.EOS {
         private string _lobbyOwnerUserIdString;
         private P2PInterface _p2PInterface;
         [SerializeField] private DebugAccount debugAccount;
+        [SerializeField] private string libraryPath = "";
 
         enum DebugAccount {
             test_user_cred,
@@ -73,12 +74,13 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 if (_platformTickTimer >= PlatformTickInterval) {
                     _platformTickTimer = 0;
                     _platformInterface.Tick();
+                    NetworkUpdate();
                 }
             }
         }
         
         private void AddUserIdMapping(ProductUserId remoteUserId) {
-            if (remoteUserId == null) {
+            if (remoteUserId == null || _remoteUserIds.Contains(remoteUserId)) {
                 return;
             }
             _remoteUserIds.Add(remoteUserId);
@@ -110,31 +112,24 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 
             }
             
-            //Limit the length of the device ID to 32 characters or less
-            if (deviceID.Length > 32) {
-                deviceID = deviceID[..32];
-            }
-            
             var loginOptions = new LoginOptions {
                 Credentials = new Credentials {
-                    Token = null,
-                    Type = ExternalCredentialType.DeviceidAccessToken
+                    Token = $"{MainMenuController._oculusUserId}|{MainMenuController._oculusUserProof}",
+                    Type = ExternalCredentialType.OculusUseridNonce
                 },
                 UserLoginInfo = new UserLoginInfo {
-                    DisplayName = deviceID
+                    DisplayName = MainMenuController._oculusUserName
                 }
             };
 
-            var createDeviceIdOptions = new CreateDeviceIdOptions {
-                DeviceModel = SystemInfo.deviceType.ToString(),
-            };
-
-            if (debugAccount != DebugAccount.None) {
+            if (debugAccount != DebugAccount.None && Application.isEditor) {
                     var debugLoginOptions = new Epic.OnlineServices.Auth.LoginOptions {
                         Credentials = new Epic.OnlineServices.Auth.Credentials {
                             Id = "localhost:4000",
                             Type = LoginCredentialType.Developer,
-                            Token = Enum.GetName(debugAccount.GetType(), debugAccount)
+                            ExternalType = ExternalCredentialType.Epic,
+                            Token = Enum.GetName(debugAccount.GetType(),
+                                debugAccount)
                         }
                     };
                     Debug.Log("Logging in with debug credentials");
@@ -205,55 +200,73 @@ namespace App.Scripts.Netcode.Backends.EOS {
                         });
             }
             else {
-                _platformInterface.GetConnectInterface().CreateDeviceId(ref createDeviceIdOptions, null,
-                    (ref CreateDeviceIdCallbackInfo info) => {
-                        if (info.ResultCode == Result.DuplicateNotAllowed) {
-                            Debug.Log("Device ID already exists");
-                        }
-                        else if (info.ResultCode == Result.Success) {
-                            Debug.Log("Successfully created device id");
-                        }
-                        else {
-                            callback?.Invoke(new ResultData {
-                                result = Results.Failure,
-                                message = "Failed to create device id"
-                            });
-                            return;
-                        }
-
-                        _platformInterface.GetConnectInterface().Login(ref loginOptions, null,
+                _platformInterface.GetConnectInterface().Login(ref loginOptions, null,
                             (ref LoginCallbackInfo data) => {
                                 if (data.ResultCode == Result.Success) {
                                     SetLocalUserIdMapping(data.LocalUserId);
+                                    AddEventHandlers();
                                     callback?.Invoke(new ResultData {
                                         result = Results.Success,
                                         message = "Login success"
                                     });
-                                    AddEventHandlers();
+                                } else if (data.ResultCode == Result.InvalidUser) {
+                                    //Create user
+                                    var options = new CreateUserOptions {
+                                        ContinuanceToken = data.ContinuanceToken
+                                    };
+                                    
+                                    _platformInterface.GetConnectInterface().CreateUser(ref options, null, (ref CreateUserCallbackInfo info) => {
+                                        if (info.ResultCode == Result.Success) {
+                                            Debug.Log("Successfully created user");
+                                            SetLocalUserIdMapping(info.LocalUserId);
+                                            AddEventHandlers();
+                                            callback?.Invoke(new ResultData {
+                                                result = Results.Success,
+                                                message = "Successfully logged in"
+                                            });
+                                        } else {
+                                            callback?.Invoke(new ResultData {
+                                                result = Results.Failure,
+                                                message = "Failed to create user"
+                                            });
+                                        }
+                                    });
                                 }
                                 else {
+                                    Debug.Log("Failed to login with error: " + data.ResultCode);
                                     callback?.Invoke(new ResultData {
                                         result = Results.Failure,
                                         message = "Login failed"
                                     });
                                 }
                             });
-                    });
             }
         }
+
+        public Action<ResultData> OnAuthenticateComplete { get; set; }
 
         public void Initialize(Action<ResultData> onComplete) {
 #if UNITY_EDITOR
 
             //Find the library path
-            var pathToLibrary = AssetDatabase.FindAssets(Config.LibraryName)
-                .Select(AssetDatabase.GUIDToAssetPath)
-                .FirstOrDefault();
-            
-            _libraryPointer = LoadLibrary(pathToLibrary);
+            if (string.IsNullOrEmpty(libraryPath) || Application.isEditor) {
+                libraryPath = AssetDatabase.FindAssets(Config.LibraryName)
+                    .Select(AssetDatabase.GUIDToAssetPath)
+                    .FirstOrDefault();
+            }
+            else {
+                libraryPath = Path.Combine(Application.dataPath, libraryPath);
+            }
+
+            _libraryPointer = LoadLibrary(libraryPath);
             
             if (_libraryPointer == IntPtr.Zero) {
-                throw new Exception("Failed to load library" + pathToLibrary);
+                onComplete?.Invoke(new ResultData {
+                    result = Results.Failure,
+                    message = "Failed to load library" + libraryPath
+                });
+                
+                throw new Exception("Failed to load library" + libraryPath);
             }
 
             Bindings.Hook(_libraryPointer, GetProcAddress);
@@ -274,15 +287,17 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 
                 return;
             }
+            
+            SetNetworkUpdateOverride(true);
 
             // The SDK outputs lots of information that is useful for debugging.
             // Make sure to set up the logging interface as early as possible: after initializing.
-            LoggingInterface.SetLogLevel(LogCategory.AllCategories, LogLevel.Warning);
+            LoggingInterface.SetLogLevel(LogCategory.AllCategories, LogLevel.VeryVerbose);
             LoggingInterface.SetCallback((ref LogMessage logMessage) => Debug.Log(logMessage.Message));
 
             #if UNITY_EDITOR || UNITY_STANDALONE_WIN
             //Get pathToLibrary without the file name
-            var pathToAudioPlugin = Application.dataPath + "/Plugins/x86_64/xaudio2_9redist.dll";
+            var pathToAudioPlugin = Application.dataPath + "/App/Modules/Netcode/Plugins/EOS/Bin/x64/xaudio2_9redist.dll";
             if (!File.Exists(pathToAudioPlugin)) {
                 Debug.LogError("Failed to find audio plugin at " + pathToAudioPlugin);
                 pathToAudioPlugin = Application.dataPath + "/App/Modules/Netcode/Plugins/EOS/Bin/x64/xaudio2_9redist.dll";
@@ -317,10 +332,11 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 OverrideCountryCode = null,
                 OverrideLocaleCode = null
             };
-#else
+            #else
             var options = new Options {
                 ProductId = productId,
                 SandboxId = sandboxId,
+                RTCOptions = new RTCOptions(),
                 DeploymentId = deploymentId,
                 ClientCredentials = new ClientCredentials {
                     ClientId = clientId,
@@ -347,10 +363,13 @@ namespace App.Scripts.Netcode.Backends.EOS {
             }
         }
 
+        public Action<ResultData> OnInitializeComplete { get; set; }
+
         private ulong _addNotifyLobbyMemberStatusReceivedHandle;
         private ulong _addNotifyPeerConnectionClosedHandle;
         private ulong _addNotifyPeerConnectionRequestHandle;
         private ulong _addNotifyRTCConnectionStateChangedHandle;
+        private ulong _addNotifyPeerConnectionEstablishedHandle;
         private void AddEventHandlers() {
             var notifyLobbyMemberStatusUpdateReceivedOptions = new AddNotifyLobbyMemberStatusReceivedOptions();
             _addNotifyLobbyMemberStatusReceivedHandle = _platformInterface.GetLobbyInterface().AddNotifyLobbyMemberStatusReceived(ref notifyLobbyMemberStatusUpdateReceivedOptions, null, OnLobbyMemberUpdate);
@@ -371,14 +390,24 @@ namespace App.Scripts.Netcode.Backends.EOS {
                     SocketName = "ChangeMe"
                 }
             };
+            
+            var notifyPeerConnectionEstablishedOptions = new AddNotifyPeerConnectionEstablishedOptions {
+                LocalUserId = _localUserId,
+                SocketId = new SocketId {
+                    SocketName = "ChangeMe"
+                }
+            };
             _addNotifyPeerConnectionClosedHandle = _p2PInterface.AddNotifyPeerConnectionClosed(ref notifyPeerConnectionClosedOptions, null, OnPeerConnectionClosed);
             _addNotifyPeerConnectionRequestHandle = _platformInterface.GetP2PInterface().AddNotifyPeerConnectionRequest(ref notifyPeerConnectionRequestOptions, null, OnPeerConnectionRequest);
+            _addNotifyPeerConnectionEstablishedHandle =
+                _p2PInterface.AddNotifyPeerConnectionEstablished(ref notifyPeerConnectionEstablishedOptions, null, OnPeerConnectionEstablished);
         }
         
         private void RemoveEventHandlers() {
             _platformInterface.GetLobbyInterface().RemoveNotifyLobbyMemberStatusReceived(_addNotifyLobbyMemberStatusReceivedHandle);
             _platformInterface.GetP2PInterface().RemoveNotifyPeerConnectionClosed(_addNotifyPeerConnectionClosedHandle);
             _platformInterface.GetP2PInterface().RemoveNotifyPeerConnectionRequest(_addNotifyPeerConnectionRequestHandle);
+            _platformInterface.GetP2PInterface().RemoveNotifyPeerConnectionEstablished(_addNotifyPeerConnectionEstablishedHandle);
         }
         
         private void OnLobbyMemberUpdate(ref LobbyMemberStatusReceivedCallbackInfo lobbyMemberUpdateReceivedCallbackInfo) {
@@ -429,6 +458,12 @@ namespace App.Scripts.Netcode.Backends.EOS {
             };
             
             _p2PInterface.AcceptConnection(ref acceptConnectionOptions);
+        }
+        
+        private void OnPeerConnectionEstablished (ref OnPeerConnectionEstablishedInfo peerConnectionEstablishedCallbackInfo) {
+            Debug.Log("Peer connection established " + peerConnectionEstablishedCallbackInfo.RemoteUserId);
+            AddUserIdMapping(peerConnectionEstablishedCallbackInfo.RemoteUserId);
+            OnPlayersChanged?.Invoke();
         }
 
         public void Uninitialize(Action<ResultData> onComplete = null) {
@@ -511,6 +546,10 @@ namespace App.Scripts.Netcode.Backends.EOS {
 
         private protected override void CreateLobbyInternal(string lobbyName, Action<Results, LobbyData> callback = null) {
             lobbyManager ??= new LobbyManager(_platformInterface, _localUserId);
+            
+            //Log everything in upper case letters
+            Debug.Log("CREATING LOBBY WITH NAME: " + lobbyName.ToUpper());
+            Debug.Log("THE LOCAL USER ID IS: " + _localUserId.ToString());
 
             var createLobbyOptions = new CreateLobbyOptions {
                 LocalUserId = _localUserId,
@@ -527,6 +566,7 @@ namespace App.Scripts.Netcode.Backends.EOS {
 
             lobbyManager.CreateLobby(createLobbyOptions, info => {
                 if (info.ResultCode != Result.Success) {
+                    Debug.Log("FAILED TO CREATE LOBBY: " + info.ResultCode);
                     callback?.Invoke(Results.Failure, new LobbyData());
                     return;
                 }
@@ -544,6 +584,12 @@ namespace App.Scripts.Netcode.Backends.EOS {
                 };
                 lobbyManager.SetLobbyAttribute(updateLobbyModificationOptions, attribute, () => {
                     lobbyManager.GetLobby(info.LobbyId, (lobby) => {
+                        if (lobby == null) {
+                            Debug.Log("FAILED TO GET LOBBY HANDLER");
+                            callback?.Invoke(Results.Failure, new LobbyData());
+                            return;
+                        }
+                        
                         var data = new LobbyData {
                             uuid = info.LobbyId,
                             name = lobbyName,
@@ -556,8 +602,13 @@ namespace App.Scripts.Netcode.Backends.EOS {
                             LobbyId = info.LobbyId,
                             LocalUserId = _localUserId
                         };
+                        
+                        Debug.Log("THE LOBBY ID IS: " + info.LobbyId);
+                        Debug.Log("THE LOCAL USER ID IS: " + _localUserId.ToString());
+                        
                         _platformInterface.GetLobbyInterface().GetRTCRoomName(ref getRTCOptions, out var rtcRoomName);
                         data.rtcRoomName = rtcRoomName;
+                        Debug.Log("THE RTC ROOM NAME IS: " + rtcRoomName);
                         SetLobbyOwnerUserIdMapping(_localUserId);
                         InitializeRTC(rtcRoomName);
                         lobby.Release();
@@ -571,24 +622,35 @@ namespace App.Scripts.Netcode.Backends.EOS {
             lobbyManager ??= new LobbyManager(_platformInterface, _localUserId);
 
             lobbyManager.GetLobby(lobbyId, details => {
+                if (details == null) {
+                    Debug.Log("FAILED TO GET LOBBY HANDLER");
+                    callback?.Invoke(Results.Failure, new LobbyData());
+                    return;
+                }
+                
                 var joinLobbyOptions = new JoinLobbyOptions {
                     LobbyDetailsHandle = details,
                     LocalUserId = _localUserId,
                     PresenceEnabled = false,
                     LocalRTCOptions = new LocalRTCOptions {
-                        Flags = 0,
                         UseManualAudioInput = false,
                         UseManualAudioOutput = true,
                         LocalAudioDeviceInputStartsMuted = false
                     }
                 };
                 lobbyManager.JoinLobby(joinLobbyOptions, info => {
-                    if (info.ResultCode != Result.Success) {
+                    if (info.ResultCode == Result.LobbyLobbyAlreadyExists) {
+                        Debug.Log("FAILED TO JOIN LOBBY: " + info.ResultCode);
                         callback?.Invoke(Results.Failure, new LobbyData());
                         return;
                     }
                     
                     lobbyManager.GetLobby(lobbyId, lobby => {
+                        if (lobby == null) {
+                            Debug.Log("FAILED TO GET LOBBY HANDLER");
+                            callback?.Invoke(Results.Failure, new LobbyData());
+                            return;
+                        }
                         var lobbyDetailsCopyInfoOptions = new LobbyDetailsCopyInfoOptions();
                         lobby.CopyInfo(ref lobbyDetailsCopyInfoOptions, out var lobbyDetailsInfo);
                         var lobbyDataItem = new LobbyData {
@@ -604,8 +666,14 @@ namespace App.Scripts.Netcode.Backends.EOS {
                             LobbyId = lobbyId,
                             LocalUserId = _localUserId
                         };
+                        
+                        Debug.Log("THE LOBBY ID IS: " + lobbyId);
+                        Debug.Log("THE LOCAL USER ID IS: " + _localUserId.ToString());
+                        
                         _platformInterface.GetLobbyInterface().GetRTCRoomName(ref getRTCOptions, out var rtcRoomName);
                         lobbyDataItem.rtcRoomName = rtcRoomName;
+                        
+                        Debug.Log("THE RTC ROOM NAME IS: " + rtcRoomName);
                         InitializeRTC(rtcRoomName);
 
                         var lobbyMemberCountOptions = new LobbyDetailsGetMemberCountOptions();
@@ -662,6 +730,10 @@ namespace App.Scripts.Netcode.Backends.EOS {
             AllowDelayedDelivery = false,
             Reliability = Epic.OnlineServices.P2P.PacketReliability.ReliableOrdered,
             DisableAutoAcceptConnection = false,
+        };
+        
+        private SocketId _socketId = new SocketId {
+            SocketName = "ChangeMe"
         };
         
         private protected override void SendInternal(string userId, byte[] data, PacketReliability reliability) {
