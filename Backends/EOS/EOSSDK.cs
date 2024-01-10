@@ -27,9 +27,7 @@ namespace App.Scripts.Netcode.Backends.EOS {
         private const float PlatformTickInterval = 0.1f;
 
         private static PlatformInterface _platformInterface;
-
-        // Set these values as appropriate. For more information, see the Developer Portal documentation.
-        [SerializeField] private string productName = "MyUnityApplication";
+        [SerializeField] private string productName = "";
         [SerializeField] private string productVersion = "1.0";
         [SerializeField] private string productId = "";
         [SerializeField] private string sandboxId = "";
@@ -291,7 +289,6 @@ namespace App.Scripts.Netcode.Backends.EOS {
             SetNetworkUpdateOverride(true);
 
             // The SDK outputs lots of information that is useful for debugging.
-            // Make sure to set up the logging interface as early as possible: after initializing.
             LoggingInterface.SetLogLevel(LogCategory.AllCategories, LogLevel.VeryVerbose);
             LoggingInterface.SetCallback((ref LogMessage logMessage) => Debug.Log(logMessage.Message));
 
