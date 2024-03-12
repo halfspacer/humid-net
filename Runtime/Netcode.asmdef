@@ -1,0 +1,16 @@
+{
+    "name": "Netcode",
+    "rootNamespace": "",
+    "references": [
+        "GUID:3b7cf88e9d6729441884290e764f086b"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
