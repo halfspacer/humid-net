@@ -1,0 +1,10 @@
+{
+  "name": "com.pioneeringstate.humidnet",
+  "version": "1.0.0",
+  "displayName": "HumidNet Netcode Package for EOS",
+  "description": "A Mid Level Networking Framework for Epic Online Services",
+  "unity": "2023.2",
+  "unityRelease": "0f1",
+  "dependencies": {
+  }
+}
